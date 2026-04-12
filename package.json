@@ -1,0 +1,32 @@
+{
+  "name": "vibing-supply",
+  "version": "0.1.0",
+  "description": "Music-synced session vibe for Claude Code: read what you're listening to, mirror it.",
+  "bin": {
+    "vibing-supply": "cli.js"
+  },
+  "files": [
+    "cli.js",
+    "skills/music/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=14"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Yukioa2z/vibes.git"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "music",
+    "vibe",
+    "now-playing",
+    "macos"
+  ],
+  "os": [
+    "darwin"
+  ]
+}

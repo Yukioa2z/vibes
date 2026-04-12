@@ -1,0 +1,453 @@
+#!/usr/bin/env bash
+# music-poll.sh — core sensor for the music skill.
+# Reads MediaRemote, diffs against cache, fetches lyrics on song change,
+# rolls a "recent[10]" buffer, tracks pause-aware playback elapsed, and
+# appends to global play history once a song has been listened to for
+# >= SKIP_THRESHOLD seconds of actual playtime.
+#
+# Idempotent. Safe to call as often as the daemon pings (every ~2s)
+# and as a safety refresh from the prompt hook.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE="/tmp/music-current.json"
+COVER="/tmp/music-cover.jpg"
+HISTORY="$HOME/.cache/music/play_history.md"
+LOCK="/tmp/music-poll.lock"
+SKIP_THRESHOLD=30
+RECENT_LIMIT=10
+LOCK_STALE_AFTER=10  # seconds before a held lock is treated as crashed
+                     # (daemon polls every 2s and a healthy poll
+                     # finishes in <1s, so 10s already means "stuck")
+
+# ── Atomic single-writer lock (mkdir is POSIX-atomic) ────────────────
+# The launchd daemon runs every 2s; the prompt hook may also call us as
+# a safety refresh; the statusline used to. Without a lock, two pollers
+# can both cross the SKIP_THRESHOLD between read and write and append
+# the same history line. mkdir guarantees only one process succeeds.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # Reclaim a stale lock from a crashed previous run.
+  if [[ -d "$LOCK" ]]; then
+    LOCK_AGE=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+    if (( LOCK_AGE > LOCK_STALE_AFTER )); then
+      rmdir "$LOCK" 2>/dev/null
+      mkdir "$LOCK" 2>/dev/null || exit 0
+    else
+      exit 0
+    fi
+  else
+    exit 0
+  fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM HUP
+
+mkdir -p "$(dirname "$HISTORY")"
+
+# Ad detection. Most platform ads (Spotify Free, Apple Music free tier
+# preview, etc.) register through MediaRemote with brand names as both
+# title and artist, with empty artist, or with explicit ad copy in the
+# title. Filter these out so they don't pollute recent[] or history.
+is_ad() {
+  local t="${1:-}" a="${2:-}"
+  [[ -z "$t" || -z "$a" ]] && { echo true; return; }
+  # Use sed for whitespace trimming, not xargs — xargs does shell-style
+  # quote parsing and chokes on apostrophes ("Lenny's Podcast" → empty
+  # output + 'unterminated quote' error to stderr).
+  local lt la
+  lt="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  la="$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+  # title and artist identical → brand-only entry
+  [[ "$lt" == "$la" ]] && { echo true; return; }
+  # explicit ad keywords in title
+  case "$lt" in
+    *advertisement*|*ad-free*|*"ads-free"*|*"ad free"*|"shop now"*|"get more"*|*"click here"*|*"save now"*|*"learn more"*|*"sign up"*|*"call now"*|*"book now"*|*"limited time"*) echo true; return ;;
+  esac
+  # known ad-platform "artists"
+  case "$la" in
+    spotify|topsify|"spotify – advertisement") echo true; return ;;
+  esac
+  echo false
+}
+
+# Pull six fields, one per line, in this exact order.
+RAW="$(nowplaying-cli get title artist album duration elapsedTime playbackRate 2>/dev/null || true)"
+TITLE="$(printf '%s\n' "$RAW" | sed -n '1p')"
+ARTIST="$(printf '%s\n' "$RAW" | sed -n '2p')"
+ALBUM="$(printf '%s\n' "$RAW" | sed -n '3p')"
+DURATION_RAW="$(printf '%s\n' "$RAW" | sed -n '4p')"
+ELAPSED_RAW="$(printf '%s\n' "$RAW" | sed -n '5p')"
+RATE_RAW="$(printf '%s\n' "$RAW" | sed -n '6p')"
+
+# Coerce numeric fields safely. nowplaying-cli prints empty/null for missing.
+to_num() {
+  local v="${1:-0}"
+  [[ "$v" =~ ^-?[0-9]+(\.[0-9]+)?$ ]] && printf '%.0f' "$v" || echo 0
+}
+DURATION="$(to_num "$DURATION_RAW")"
+ELAPSED="$(to_num "$ELAPSED_RAW")"
+RATE="$(to_num "$RATE_RAW")"
+
+# Nothing playing → leave the cache untouched (preserves "vibe drift" of last song).
+if [[ -z "$TITLE" || "$TITLE" == "null" ]]; then
+  exit 0
+fi
+
+NOW="$(date +%s)"
+TRACK_KEY="${TITLE}::${ARTIST}"
+ISO_NOW="$(date -u +%Y-%m-%dT%H:%M)"
+
+PREV_TRACK_KEY=""
+PREV_LOGGED="false"
+PREV_TITLE=""
+PREV_ARTIST=""
+PREV_RECENT="[]"
+PREV_PLAYED=0
+PREV_POSITION=0
+PREV_TICK_AT="$NOW"
+if [[ -f "$CACHE" ]]; then
+  PREV_TRACK_KEY="$(jq -r '.trackKey // ""' "$CACHE" 2>/dev/null || echo "")"
+  PREV_LOGGED="$(jq -r '.loggedToHistory // false' "$CACHE" 2>/dev/null || echo "false")"
+  PREV_TITLE="$(jq -r '.title // ""' "$CACHE" 2>/dev/null || echo "")"
+  PREV_ARTIST="$(jq -r '.artist // ""' "$CACHE" 2>/dev/null || echo "")"
+  PREV_RECENT="$(jq -c '.recent // []' "$CACHE" 2>/dev/null || echo "[]")"
+  PREV_PLAYED="$(jq -r '.playbackElapsed // 0' "$CACHE" 2>/dev/null || echo 0)"
+  PREV_POSITION="$(jq -r '.playbackPosition // 0' "$CACHE" 2>/dev/null || echo 0)"
+  PREV_TICK_AT="$(jq -r '.lastTickAt // 0' "$CACHE" 2>/dev/null || echo "$NOW")"
+fi
+
+write_cache() {
+  local tmp; tmp="$(mktemp)"
+  cat > "$tmp"
+  mv -f "$tmp" "$CACHE"
+}
+
+# ── Deduplicated lyrics extractor ──
+# Takes plain lyrics on stdin, outputs up to 12 unique non-empty lines as JSON array.
+dedup_lyrics() {
+  python3 -c '
+import sys, json
+seen, out = set(), []
+for line in sys.stdin:
+    s = line.strip()
+    if not s: continue
+    key = s.lower()
+    if key in seen: continue
+    seen.add(key)
+    out.append(s)
+    if len(out) >= 12: break
+print(json.dumps(out, ensure_ascii=False))
+'
+}
+
+# ── Lyrics fetch: 3-tier search ──
+#   1) lrclib /get  — exact artist+track+album match (best when present)
+#   2) lrclib /search — fuzzy fallback when /get misses (album mismatch
+#      or punctuation drift); pick first result that has plainLyrics and
+#      whose artist contains ours.
+#   3) NetEase public API — CJK / non-Western fallback.
+fetch_lyrics4() {
+  # 1) lrclib /get (exact)
+  local raw plain
+  raw="$(curl -fsS --max-time 2 -G "https://lrclib.net/api/get" \
+    --data-urlencode "artist_name=$ARTIST" \
+    --data-urlencode "track_name=$TITLE" \
+    --data-urlencode "album_name=$ALBUM" 2>/dev/null || echo '{}')"
+  plain="$(printf '%s' "$raw" | jq -r '.plainLyrics // ""' 2>/dev/null)"
+  if [[ -n "$plain" ]]; then
+    printf '%s' "$plain" | awk 'NF' | dedup_lyrics
+    return
+  fi
+
+  # 2) lrclib /search (fuzzy: artist match AND normalized-title match)
+  local search_resp
+  search_resp="$(curl -fsS --max-time 3 -G "https://lrclib.net/api/search" \
+    --data-urlencode "q=$ARTIST $TITLE" 2>/dev/null || echo '[]')"
+  plain="$(printf '%s' "$search_resp" | python3 -c '
+import json, sys, re
+def norm(s):
+    if not s: return ""
+    s = s.lower()
+    s = re.sub(r"\(feat\.?[^)]*\)|\[feat\.?[^\]]*\]|\(remix\)|\(remastered\)", "", s)
+    s = re.sub(r"[^\w\s]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+try:
+    arr = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+artist_n = norm(sys.argv[1])
+title_n  = norm(sys.argv[2])
+for r in arr:
+    a = norm(r.get("artistName"))
+    t = norm(r.get("trackName"))
+    pl = r.get("plainLyrics")
+    if not pl: continue
+    artist_match = artist_n in a or a in artist_n
+    title_match  = title_n in t or t in title_n
+    if artist_match and title_match:
+        print(pl)
+        sys.exit(0)
+' "$ARTIST" "$TITLE" 2>/dev/null)"
+  if [[ -n "$plain" ]]; then
+    printf '%s' "$plain" | awk 'NF' | dedup_lyrics
+    return
+  fi
+
+  # 3) NetEase public API fallback (anonymous, no auth) for CJK coverage
+  local query="$ARTIST $TITLE"
+  local search
+  search="$(curl -fsS --max-time 3 -G "https://music.163.com/api/search/get" \
+    -H "Referer: https://music.163.com/" \
+    --data-urlencode "s=$query" \
+    --data-urlencode "type=1" \
+    --data-urlencode "limit=1" 2>/dev/null || echo '{}')"
+  local songid
+  songid="$(printf '%s' "$search" | jq -r '.result.songs[0].id // empty' 2>/dev/null)"
+  if [[ -n "$songid" ]]; then
+    local lrc
+    lrc="$(curl -fsS --max-time 3 "https://music.163.com/api/song/lyric?id=${songid}&lv=-1&tv=-1" \
+      -H "Referer: https://music.163.com/" 2>/dev/null || echo '{}')"
+    local raw_lrc
+    raw_lrc="$(printf '%s' "$lrc" | jq -r '.lrc.lyric // ""' 2>/dev/null)"
+    if [[ -n "$raw_lrc" ]]; then
+      # LRC is "[mm:ss.xx]words" — strip timestamps, drop blanks, drop LRC
+      # ID3 meta (ti:/ar:/al:), and drop ALL credit lines (heuristic: any
+      # line whose pre-colon prefix is ≤ 8 chars of CJK/letters and is
+      # followed by ":" or "：" — that pattern is universally "role : name"
+      # in NetEase lyrics, never lyric content).
+      printf '%s' "$raw_lrc" \
+        | sed -E 's/\[[0-9:.]+\]//g' \
+        | python3 -c '
+import sys, re, json
+LRC_META = re.compile(r"^[A-Za-z]{2,4}\s*:\s*\S")
+CREDIT   = re.compile(r"^\s*\S{1,8}\s*[:：]\s*\S")
+seen, out = set(), []
+for line in sys.stdin:
+    s = line.strip()
+    if not s: continue
+    if LRC_META.match(s) or CREDIT.match(s): continue
+    key = s.lower()
+    if key in seen: continue
+    seen.add(key)
+    out.append(s)
+    if len(out) >= 12: break
+print(json.dumps(out, ensure_ascii=False))
+'
+      return
+    fi
+  fi
+
+  printf '[]'
+}
+
+if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
+  # ── New song ─────────────────────────────────────────────────────────
+  # Push previous track onto the front of the recent buffer (cap at
+  # RECENT_LIMIT) — but skip ads to keep drift signal clean.
+  PREV_WAS_SKIP=false
+  if [[ -n "$PREV_TRACK_KEY" && "$(is_ad "$PREV_TITLE" "$PREV_ARTIST")" == "false" ]]; then
+    # A song listened to < SKIP_THRESHOLD seconds counts as a skip.
+    (( PREV_PLAYED < SKIP_THRESHOLD )) && PREV_WAS_SKIP=true
+    NEW_RECENT="$(jq -c \
+      --arg t "$PREV_TITLE" \
+      --arg a "$PREV_ARTIST" \
+      --arg al "$( jq -r '.album // ""' "$CACHE" 2>/dev/null )" \
+      --argjson ts "$NOW" \
+      --argjson skipped "$PREV_WAS_SKIP" \
+      "[{title:\$t, artist:\$a, album:\$al, ts:\$ts, skipped:\$skipped}] + . | .[0:${RECENT_LIMIT}]" \
+      <<<"$PREV_RECENT")"
+
+    # Log skipped tracks to history (the 30s-threshold path won't catch
+    # them since they never crossed it). Captures interaction signal
+    # that was previously only visible in the in-memory recent[] buffer.
+    if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" ]]; then
+      printf '%s\n' "- ${ISO_NOW} — ${PREV_TITLE} · ${PREV_ARTIST} · skipped ${PREV_PLAYED}s" >> "$HISTORY"
+    fi
+  else
+    NEW_RECENT="$PREV_RECENT"
+  fi
+
+  LYRICS_4="$(fetch_lyrics4)"
+  [[ -z "$LYRICS_4" ]] && LYRICS_4="[]"
+
+  # Cover artwork: ALWAYS clear the file first so a song without
+  # artwork doesn't keep showing the previous song's cover. Then try
+  # the dump. coverAvailable reflects whether THIS fetch produced data.
+  rm -f "$COVER"
+  nowplaying-cli get-raw 2>/dev/null | python3 -c '
+import json, sys, base64
+try:
+    d = json.load(sys.stdin)
+    art = d.get("kMRMediaRemoteNowPlayingInfoArtworkData")
+    if art:
+        open("'"$COVER"'", "wb").write(base64.b64decode(art))
+except Exception:
+    pass
+' 2>/dev/null || true
+  COVER_AVAILABLE=false
+  [[ -s "$COVER" ]] && COVER_AVAILABLE=true
+
+  # Genre enrichment (iTunes + Spotify). Bounded by internal timeouts.
+  ENRICH_JSON="$(bash "$SCRIPT_DIR/music-enrich.sh" "$ARTIST" "$TITLE" 2>/dev/null || echo '{}')"
+  [[ -z "$ENRICH_JSON" ]] && ENRICH_JSON='{}'
+
+  # Live Spotify player state: shuffle/repeat/context/device + Liked.
+  # Returns {} when nothing-Spotify is playing (e.g. Apple Music) so it's
+  # safe to call unconditionally — merge becomes a no-op in that case.
+  SPOTIFY_JSON="$(bash "$SCRIPT_DIR/music-player-state.sh" 2>/dev/null || echo '{}')"
+  [[ -z "$SPOTIFY_JSON" ]] && SPOTIFY_JSON='{}'
+
+  # Played time starts at 0: even if the player begins mid-track (e.g.
+  # the user joined a song already in progress), we only count what
+  # WE actually observed. Player position starts at the player's value.
+  jq -n \
+    --arg title "$TITLE" \
+    --arg artist "$ARTIST" \
+    --arg album "$ALBUM" \
+    --arg trackKey "$TRACK_KEY" \
+    --argjson duration "$DURATION" \
+    --argjson initialElapsed "$ELAPSED" \
+    --argjson playbackElapsed 0 \
+    --argjson playbackPosition "$ELAPSED" \
+    --argjson lastTickAt "$NOW" \
+    --argjson firstSeenAtUnix "$NOW" \
+    --argjson playbackRate "$RATE" \
+    --argjson lyrics4 "$LYRICS_4" \
+    --argjson recent "$NEW_RECENT" \
+    --argjson coverAvailable "$COVER_AVAILABLE" \
+    --argjson enrich "$ENRICH_JSON" \
+    --argjson spotify "$SPOTIFY_JSON" \
+    --arg startedAt "$ISO_NOW" \
+    '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
+      duration:$duration, initialElapsed:$initialElapsed,
+      playbackElapsed:$playbackElapsed, playbackPosition:$playbackPosition,
+      lastTickAt:$lastTickAt, firstSeenAtUnix:$firstSeenAtUnix,
+      playbackRate:$playbackRate, lyrics4:$lyrics4, recent:$recent,
+      coverAvailable:$coverAvailable, coverShownToHook:false,
+      startedAt:$startedAt, loggedToHistory:false}
+      + $enrich + $spotify' | write_cache
+
+  # ── Behavioral signals ─────────────────────────────────────────────
+  # Derive listening mode from the recent buffer. Computed once on song
+  # change, then baked into the cache for the hook to read.
+  BEHAVIOR="$(ENRICH_TITLE="$TITLE" ENRICH_ARTIST="$ARTIST" ENRICH_ALBUM="$ALBUM" python3 -c '
+import json, os, sys
+
+title = os.environ.get("ENRICH_TITLE", "")
+artist = os.environ.get("ENRICH_ARTIST", "")
+album = os.environ.get("ENRICH_ALBUM", "")
+
+try:
+    with open("/tmp/music-current.json") as f:
+        cache = json.load(f)
+except Exception:
+    sys.exit(0)
+
+recent = cache.get("recent", [])
+
+# Count skips
+skips = sum(1 for r in recent if r.get("skipped"))
+
+# Count consecutive repeats of current song
+repeats = sum(1 for r in recent if r.get("title") == title and r.get("artist") == artist) + 1
+
+# Count same-album run in last 5
+album_run = 0
+if album:
+    album_run = sum(1 for r in recent[:5] if r.get("album") == album) + 1
+
+# Derive mode
+if repeats >= 2:
+    mode = "on-repeat"
+elif skips >= 3:
+    mode = "restless"
+elif album_run >= 3:
+    mode = "deep-listening"
+else:
+    mode = "flowing"
+
+cache["recentSkips"] = skips
+cache["consecutiveRepeats"] = repeats
+cache["sameAlbumRun"] = album_run
+cache["listeningMode"] = mode
+
+print(json.dumps(cache))
+' 2>/dev/null)" || true
+  if [[ -n "$BEHAVIOR" ]]; then
+    printf '%s' "$BEHAVIOR" | write_cache
+  fi
+
+else
+  # ── Same song ────────────────────────────────────────────────────────
+  # Two independent counters:
+  #   playbackElapsed = SECONDS HEARD (used for the 30s history threshold).
+  #     Only ever += DELTA when rate=1. Never set from player position;
+  #     a seek is not "listening time".
+  #   playbackPosition = WHERE IN THE TRACK the player is (used for the
+  #     statusline countdown). Trusts player's elapsed when reported,
+  #     interpolates otherwise.
+  DELTA=$(( NOW - PREV_TICK_AT ))
+  if (( DELTA < 0 )); then DELTA=0; fi
+  # Cap DELTA to MAX_DELTA. The daemon polls every 2s, so a healthy
+  # gap is ~2-4s. Anything bigger is a wake-from-sleep, dropped network,
+  # or stuck script — counting that whole gap as "heard" or "advanced
+  # in track" inflates playbackElapsed and pushes playbackPosition past
+  # the song length, producing a -0:00 statusline. Clamp it.
+  MAX_DELTA=10
+  if (( DELTA > MAX_DELTA )); then
+    DELTA=$MAX_DELTA
+  fi
+
+  if (( RATE == 1 )); then
+    NEW_PLAYED=$(( PREV_PLAYED + DELTA ))
+  else
+    NEW_PLAYED=$PREV_PLAYED
+  fi
+
+  if (( ELAPSED > 0 )); then
+    NEW_POSITION=$ELAPSED
+  elif (( RATE == 1 )); then
+    NEW_POSITION=$(( PREV_POSITION + DELTA ))
+  else
+    NEW_POSITION=$PREV_POSITION
+  fi
+  # Clamp position at duration. Before, we'd reset to ELAPSED (often 0
+  # when the player doesn't broadcast position) — that made the
+  # countdown loop endlessly when the actual track had ended but the
+  # player didn't update its rate. Now we hold at duration so the
+  # statusline can detect "ended" and stop pretending.
+  if (( DURATION > 0 && NEW_POSITION > DURATION )); then
+    NEW_POSITION=$DURATION
+  fi
+
+  jq \
+    --argjson playbackElapsed "$NEW_PLAYED" \
+    --argjson playbackPosition "$NEW_POSITION" \
+    --argjson lastTickAt "$NOW" \
+    --argjson playbackRate "$RATE" \
+    '.playbackElapsed = $playbackElapsed
+     | .playbackPosition = $playbackPosition
+     | .lastTickAt = $lastTickAt
+     | .playbackRate = $playbackRate' \
+    "$CACHE" | write_cache
+
+  # First crossing of the skip threshold (using actual heard time, not
+  # player position — so seeking past 30s doesn't auto-log a track the
+  # user never actually listened to). Skip ads.
+  if [[ "$PREV_LOGGED" == "false" && "$NEW_PLAYED" -ge "$SKIP_THRESHOLD" \
+        && "$(is_ad "$TITLE" "$ARTIST")" == "false" ]]; then
+    HIST_GENRE="$(jq -r '
+      if (.genres // []) | length > 0 then " [" + (.genres | join(", ")) + "]"
+      elif (.genre // "") != "" then " [" + .genre + "]"
+      else ""
+      end
+    ' "$CACHE" 2>/dev/null)"
+    REPEAT_MARK=""
+    REPEAT_COUNT="$(jq -r '.consecutiveRepeats // 1' "$CACHE" 2>/dev/null)"
+    (( REPEAT_COUNT >= 2 )) && REPEAT_MARK=" · repeat ${REPEAT_COUNT}x"
+    LIKED_MARK=""
+    [[ "$(jq -r '.spotify.liked // false' "$CACHE" 2>/dev/null)" == "true" ]] && LIKED_MARK=" ❤"
+    printf '%s\n' "- ${ISO_NOW} — ${TITLE} · ${ARTIST}${HIST_GENRE}${REPEAT_MARK}${LIKED_MARK}" >> "$HISTORY"
+    jq '.loggedToHistory = true' "$CACHE" | write_cache
+  fi
+fi
