@@ -1,0 +1,35 @@
+name: Validate Vibes
+
+on:
+  pull_request:
+    paths:
+      - 'skills/vibe/vibes/**/vibe.json'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install ajv-cli
+        run: npm install -g ajv-cli
+
+      - name: Validate all vibe.json files
+        run: |
+          for f in skills/vibe/vibes/*/vibe.json; do
+            echo "Validating $f..."
+            ajv validate -s schema/vibe.schema.json -d "$f"
+          done
+
+      - name: Check for duplicate names
+        run: |
+          names=$(cat skills/vibe/vibes/*/vibe.json | jq -r '.name')
+          dupes=$(echo "$names" | sort | uniq -d)
+          if [ -n "$dupes" ]; then
+            echo "Duplicate vibe names found: $dupes"
+            exit 1
+          fi
