@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["name", "displayName", "description", "author", "statusline", "install"],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+    "displayName": { "type": "string" },
+    "description": { "type": "string" },
+    "author": { "type": "string" },
+    "statusline": {
+      "type": "object",
+      "required": ["segments"],
+      "properties": {
+        "segments": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {
+              "type": {
+                "enum": ["progress-bar", "text", "countdown", "animation"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "spinnerVerbs": {
+      "type": "object",
+      "properties": {
+        "mode": { "enum": ["replace", "append"] },
+        "verbs": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "spinnerTips": {
+      "type": "object",
+      "properties": {
+        "tips": { "type": "array", "items": { "type": "string" } },
+        "excludeDefault": { "type": "boolean" }
+      }
+    },
+    "install": { "type": "string" }
+  }
+}

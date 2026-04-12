@@ -1,0 +1,43 @@
+{
+  "name": "vibing",
+  "displayName": "Vibing",
+  "description": "Chill mode. Take it easy.",
+  "author": "yyou",
+  "statusline": {
+    "segments": [
+      {
+        "type": "progress-bar",
+        "width": 20,
+        "colors": {
+          "low": "#22c55e",
+          "mid": "#eab308",
+          "high": "#ef4444",
+          "thresholds": [60, 80]
+        }
+      },
+      {
+        "type": "text",
+        "template": "{ctx_pct}% | {model} | {cost} | {tokens}"
+      },
+      {
+        "type": "countdown",
+        "style": "to-midnight"
+      },
+      {
+        "type": "animation",
+        "frames": ["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"],
+        "interval": 0.5,
+        "trigger": "time"
+      }
+    ]
+  },
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": ["Vibing", "Floating", "Drifting", "Cruising"]
+  },
+  "spinnerTips": {
+    "tips": ["take it easy", "no rush", "let it flow"],
+    "excludeDefault": true
+  },
+  "install": "npx vibing-supply use vibing"
+}
