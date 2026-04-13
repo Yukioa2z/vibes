@@ -1,0 +1,46 @@
+{
+  "name": "tamagotchi",
+  "displayName": "Tamagotchi",
+  "description": "A little creature lives in your statusline. Feed it tokens, watch it react.",
+  "author": "yyou",
+  "statusline": {
+    "segments": [
+      {
+        "type": "tamagotchi",
+        "faces": {
+          "chill": "(◕‿◕)",
+          "normal": "(•‿•)",
+          "nervous": "(⊙_⊙)",
+          "sweating": "(°△°)",
+          "panic": "(×_×)"
+        },
+        "thresholds": [30, 50, 70, 90]
+      },
+      {
+        "type": "sparkline",
+        "width": 16,
+        "source": "ctx_pct",
+        "chars": "▁▂▃▄▅▆▇█"
+      },
+      {
+        "type": "text",
+        "template": "{ctx_pct}% | {cost}"
+      },
+      {
+        "type": "animation",
+        "frames": ["♡", "♥"],
+        "interval": 1,
+        "trigger": "time"
+      }
+    ]
+  },
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": ["Munching", "Napping", "Playing", "Stretching"]
+  },
+  "spinnerTips": {
+    "tips": ["feed me tokens", "i'm hungry", "pet me", "*purrs*"],
+    "excludeDefault": true
+  },
+  "install": "npx vibing-supply use tamagotchi"
+}
