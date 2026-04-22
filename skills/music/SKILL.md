@@ -1,9 +1,9 @@
 ---
 name: music
-description: Make Claude session-aware of the music the user is currently listening to. Reads now-playing metadata + lyrics + recent track history from macOS MediaRemote and injects them as context every turn, letting Claude naturally mirror the user's vibe (or ignore it for transactional asks). Use this skill when the user wants Claude's tone to follow their music, when they ask "what am I listening to", or to install / uninstall / explain the music mechanism.
+description: Make Claude session-aware of the music the user is currently listening to. Reads now-playing metadata, lyrics, genre, cover art, and listening behavior from macOS MediaRemote and injects them as context every turn. Use this skill when the user wants Claude's tone to follow their music, when they ask "what am I listening to", or to install / uninstall / explain the music mechanism.
 ---
 
-# Attune — Music-Synced Session Vibe
+# Music — Session-Aware Listening Context
 
 A Claude Code skill that turns the user's current music into a session-wide signal. No presets, no schema. The mechanism is intentionally minimal: poll, cache, inject — let Claude derive everything.
 
@@ -11,10 +11,14 @@ A Claude Code skill that turns the user's current music into a session-wide sign
 
 - Detects the currently playing track on macOS (any player: Spotify, Apple Music, QQ Music, NetEase, browser tabs that use Media Session API…).
 - A launchd `KeepAlive` daemon runs `vibe-poll.sh` every 2 seconds, keeping the cache at `/tmp/vibe-current.json` fresh independently of Claude Code activity.
-- On every song change, fetches up to four lines of lyrics from [lrclib](https://lrclib.net/) and updates the cache.
-- Logs each track to `~/.cache/vibe/play_history.md` once it has been listened to for ≥ 30 seconds (skips don't count).
-- Renders an optional statusline row: `🎧 <title>  -<remaining>`, **appended below your existing statusline content** (the `music` vibe composes with whatever base vibe you already use — default `pomodoro`; override with `VIBE_BASE`). Note: Claude Code's statusline only re-renders on events in current versions — when it renders it shows the latest cache, but the countdown does not visibly tick between events.
-- On every `UserPromptSubmit`, injects a `<now-playing>` block (track + lyrics + last 10 tracks) into the next assistant turn.
+- On every song change:
+  - Fetches up to 12 lines of deduplicated lyrics from [lrclib](https://lrclib.net/) (CJK fallback via NetEase API).
+  - Saves cover art to `/tmp/vibe-cover.jpg` for multimodal context.
+  - Enriches with genre via iTunes Search API (free, no auth) and optionally Spotify API (artist genres, requires one-time OAuth).
+  - Tracks listening behavior: skip detection, repeat counting, album runs.
+- Logs each track (with genre tag) to `~/.cache/vibe/play_history.md` once listened to for ≥ 30 seconds. Claude appends session notes at milestones.
+- Renders an optional statusline row: `🎧 <title>  -<remaining>`, appended below your existing statusline content.
+- On every `UserPromptSubmit`, injects a `<now-playing>` block into the next assistant turn: track + genre + lyrics + listening behavior + recent drift with skip markers + cover hint.
 
 ## The `<now-playing>` block
 
@@ -46,31 +50,35 @@ bash /Users/yuuue/Documents/vibes/skills/music/uninstall.sh
 
 Removes the hook entry, the statusline option, and the CLAUDE.md pointer. Leaves the play history file intact.
 
+## Spotify setup (optional)
+
+Adds richer genre tags (e.g. "indie rock, welsh indie" instead of just "Alternative"). One-time setup:
+
+1. Create an app at https://developer.spotify.com/dashboard
+2. Add redirect URI: `http://localhost:8888/callback`
+3. Run: `python3 bin/vibe-spotify-setup.py <client_id>`
+
+Tokens auto-refresh. No Premium required.
+
 ## Files
 
 | Path | Purpose |
 |---|---|
-| `bin/vibe-poll.sh` | Sensor: reads MediaRemote, diffs cache, fetches lyrics, rolls recent buffer, logs history. |
-| `bin/vibe-statusline.sh` | Statusline renderer; calls `vibe-poll.sh` first as a safety refresh. |
-| `bin/vibe-hook.sh` | UserPromptSubmit hook; pure cache reader, outputs `additionalContext`. |
+| `bin/vibe-poll.sh` | Core sensor: MediaRemote → cache, lyrics, cover, enrichment, behavior signals, history. |
+| `bin/vibe-enrich.sh` | Genre enrichment: iTunes Search API + Spotify API (if configured). |
+| `bin/vibe-hook.sh` | UserPromptSubmit hook; reads cache, outputs `<now-playing>` block. |
+| `bin/vibe-statusline.sh` | Statusline renderer: `🎧 <title>  -<remaining>`. |
+| `bin/vibe-spotify-setup.py` | One-time Spotify PKCE OAuth flow. |
 | `install.sh` / `uninstall.sh` | Idempotent setup / teardown. |
-| `~/Library/Application Support/vibe/poll.sh` | Copy of `vibe-poll.sh` accessible to launchd. |
-| `~/Library/Application Support/vibe/daemon.sh` | Long-running loop invoked by launchd; polls every 2s. |
-| `~/Library/LaunchAgents/supply.vibe.poll.plist` | launchd `KeepAlive` job that keeps `daemon.sh` running. |
-| `/tmp/vibe-current.json` | Source of truth (ephemeral). |
-| `~/.cache/vibe/play_history.md` | Append-only listening log (persistent). |
+| `/tmp/vibe-current.json` | Ephemeral cache (real-time state + behavior signals). |
+| `~/.cache/vibe/play_history.md` | Persistent listening log with genre tags and session notes. |
+| `~/.config/vibe/spotify.json` | Spotify tokens (created by setup script). |
 
-## Phase 1 boundaries
+## Boundaries
 
 | Out of scope | Reason |
 |---|---|
 | Linux / Windows | `nowplaying-cli` is macOS-only. |
-| Pre-derived "vibe brief" / schema | We trust Claude to interpret the raw signal. |
-| Auto playlist generation | Different direction; handled by `ncm-cli` flows separately. |
-| Statusline auto-tick | Claude Code's statusline only re-renders on events in current versions. |
-
-## What it now handles (since initial Phase 1)
-
-- **Cover image** — saved to `/tmp/vibe-cover.jpg` on every song change. The hook injects a hint mentioning the path on the **first** turn after a song change; subsequent turns omit the hint to avoid noise. The assistant can `Read` the path to get a multimodal signal (palette, era, aesthetic).
-- **CJK lyrics** — when lrclib has no entry, falls back to NetEase's anonymous public mobile API (search → song/lyric). Strips LRC timestamps, ID3 metadata, and credit lines.
-- **Pause / seek** — `playbackElapsed` only advances when `playbackRate=1`; pauses freeze the count. If the player reports an `elapsedTime` that disagrees with our local count by > 5s, we treat it as a seek and resync. The 30s history-append threshold uses real played time, not wall time.
+| Pre-derived mood labels | Raw signals only — no "you should feel X" instructions. |
+| Auto playlist generation | Different product direction. |
+| Like/favorite detection | Requires per-app API integration; may add via Spotify later. |
