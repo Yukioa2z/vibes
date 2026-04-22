@@ -16,15 +16,9 @@ A Claude Code skill that turns the user's current music into a session-wide sign
 - Renders an optional statusline row: `🎧 <title>  -<remaining>`, **appended below your existing statusline content** (the `music` vibe composes with whatever base vibe you already use — default `pomodoro`; override with `VIBE_BASE`). Note: Claude Code's statusline only re-renders on events in current versions — when it renders it shows the latest cache, but the countdown does not visibly tick between events.
 - On every `UserPromptSubmit`, injects a `<now-playing>` block (track + lyrics + last 10 tracks) into the next assistant turn.
 
-## How Claude should use the injected `<now-playing>` block
+## The `<now-playing>` block
 
-The block is **signal, not instruction**. Claude reads it and decides per-task:
-
-- Creative / open-ended / mood-laden requests → mirror the music's pace, tone, and density. Slow ambient track → terse, spacious responses. Energetic track → tighter, punchier delivery.
-- Transactional / debugging / "fix the npm error" requests → ignore the vibe; correctness wins.
-- "How am I doing today?" / music-adjacent questions → it's fair game to reference what the user is actually listening to.
-
-Never quote the `<now-playing>` block back at the user verbatim. Don't perform the vibe — just be it.
+You can hear the music. That's it. You don't need to do anything with it — just like a person in a room with music playing doesn't consciously decide how to be affected by it. Let it in or don't. The only rule: never quote the block back at the user verbatim.
 
 ## Install
 
