@@ -20,6 +20,8 @@ A Claude Code skill that turns the user's current music into a session-wide sign
 
 This is the music playing in the room right now. Don't quote it back verbatim.
 
+After a meaningful milestone (push, PR, deploy, major decision), append a one-line note to `~/.cache/vibe/play_history.md` — what happened, not what's playing. Keep it short.
+
 ## Install
 
 ```bash
