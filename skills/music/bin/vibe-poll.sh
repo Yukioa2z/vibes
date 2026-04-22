@@ -118,6 +118,24 @@ write_cache() {
   mv -f "$tmp" "$CACHE"
 }
 
+# ── Deduplicated lyrics extractor ──
+# Takes plain lyrics on stdin, outputs up to 12 unique non-empty lines as JSON array.
+dedup_lyrics() {
+  python3 -c '
+import sys, json
+seen, out = set(), []
+for line in sys.stdin:
+    s = line.strip()
+    if not s: continue
+    key = s.lower()
+    if key in seen: continue
+    seen.add(key)
+    out.append(s)
+    if len(out) >= 12: break
+print(json.dumps(out, ensure_ascii=False))
+'
+}
+
 # ── Lyrics fetch: 3-tier search ──
 #   1) lrclib /get  — exact artist+track+album match (best when present)
 #   2) lrclib /search — fuzzy fallback when /get misses (album mismatch
@@ -133,7 +151,7 @@ fetch_lyrics4() {
     --data-urlencode "album_name=$ALBUM" 2>/dev/null || echo '{}')"
   plain="$(printf '%s' "$raw" | jq -r '.plainLyrics // ""' 2>/dev/null)"
   if [[ -n "$plain" ]]; then
-    printf '%s' "$plain" | awk 'NF' | head -4 | jq -R . | jq -s .
+    printf '%s' "$plain" | awk 'NF' | dedup_lyrics
     return
   fi
 
@@ -167,7 +185,7 @@ for r in arr:
         sys.exit(0)
 ' "$ARTIST" "$TITLE" 2>/dev/null)"
   if [[ -n "$plain" ]]; then
-    printf '%s' "$plain" | awk 'NF' | head -4 | jq -R . | jq -s .
+    printf '%s' "$plain" | awk 'NF' | dedup_lyrics
     return
   fi
 
@@ -199,13 +217,16 @@ for r in arr:
 import sys, re, json
 LRC_META = re.compile(r"^[A-Za-z]{2,4}\s*:\s*\S")
 CREDIT   = re.compile(r"^\s*\S{1,8}\s*[:：]\s*\S")
-out = []
+seen, out = set(), []
 for line in sys.stdin:
     s = line.strip()
     if not s: continue
     if LRC_META.match(s) or CREDIT.match(s): continue
+    key = s.lower()
+    if key in seen: continue
+    seen.add(key)
     out.append(s)
-    if len(out) >= 4: break
+    if len(out) >= 12: break
 print(json.dumps(out, ensure_ascii=False))
 '
       return
