@@ -10,6 +10,7 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CACHE="/tmp/vibe-current.json"
 COVER="/tmp/vibe-cover.jpg"
 HISTORY="$HOME/.cache/vibe/play_history.md"
@@ -271,6 +272,10 @@ except Exception:
   COVER_AVAILABLE=false
   [[ -s "$COVER" ]] && COVER_AVAILABLE=true
 
+  # Genre enrichment (iTunes + Spotify). Bounded by internal timeouts.
+  ENRICH_JSON="$(bash "$SCRIPT_DIR/vibe-enrich.sh" "$ARTIST" "$TITLE" 2>/dev/null || echo '{}')"
+  [[ -z "$ENRICH_JSON" ]] && ENRICH_JSON='{}'
+
   # Played time starts at 0: even if the player begins mid-track (e.g.
   # the user joined a song already in progress), we only count what
   # WE actually observed. Player position starts at the player's value.
@@ -289,6 +294,7 @@ except Exception:
     --argjson lyrics4 "$LYRICS_4" \
     --argjson recent "$NEW_RECENT" \
     --argjson coverAvailable "$COVER_AVAILABLE" \
+    --argjson enrich "$ENRICH_JSON" \
     --arg startedAt "$ISO_NOW" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
       duration:$duration, initialElapsed:$initialElapsed,
@@ -296,7 +302,8 @@ except Exception:
       lastTickAt:$lastTickAt, firstSeenAtUnix:$firstSeenAtUnix,
       playbackRate:$playbackRate, lyrics4:$lyrics4, recent:$recent,
       coverAvailable:$coverAvailable, coverShownToHook:false,
-      startedAt:$startedAt, loggedToHistory:false}' | write_cache
+      startedAt:$startedAt, loggedToHistory:false}
+      + $enrich' | write_cache
 
 else
   # ── Same song ────────────────────────────────────────────────────────

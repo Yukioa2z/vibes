@@ -47,6 +47,15 @@ ARTIST="$(jq -r '.artist // ""' "$CACHE")"
 ALBUM="$(jq -r '.album // ""' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
 LYRICS_LINES="$(jq -r '.lyrics4 // [] | .[]' "$CACHE")"
+# Genre: prefer Spotify genres array, fall back to iTunes genre
+GENRE_LINE="$(jq -r '
+  if (.genres // []) | length > 0
+  then .genres | join(", ")
+  elif .genre // "" | length > 0
+  then .genre
+  else ""
+  end
+' "$CACHE" 2>/dev/null)"
 RECENT_LINES="$(jq -r '
   .recent // [] | to_entries | .[] |
   "  [-\(.key + 1)] \(.value.title) · \(.value.artist)"
@@ -74,6 +83,9 @@ fi
     printf '"%s" — %s (album: %s)%s\n' "$TITLE" "$ARTIST" "$ALBUM" "$PAUSED_TAG"
   else
     printf '"%s" — %s%s\n' "$TITLE" "$ARTIST" "$PAUSED_TAG"
+  fi
+  if [[ -n "$GENRE_LINE" ]]; then
+    printf 'Genre: %s\n' "$GENRE_LINE"
   fi
   if [[ -n "$LYRICS_LINES" ]]; then
     printf 'Lyrics:\n'

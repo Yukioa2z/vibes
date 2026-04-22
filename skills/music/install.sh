@@ -90,7 +90,8 @@ chmod +x "$STATUSLINES_DIR/music.sh"
 # processes lack TCC access there.
 say "installing background poll daemon"
 cp "$BIN_DIR/vibe-poll.sh" "$SUPPORT_DIR/poll.sh"
-chmod +x "$SUPPORT_DIR/poll.sh"
+cp "$BIN_DIR/vibe-enrich.sh" "$SUPPORT_DIR/vibe-enrich.sh"
+chmod +x "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/vibe-enrich.sh"
 cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 #!/bin/bash
 # Long-running poll loop. macOS throttles short StartInterval values,
@@ -98,7 +99,7 @@ cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 # Each poll is hard-bounded so a hung curl or wedged nowplaying-cli
 # call can't pin the daemon and stale the cache.
 INTERVAL=2
-POLL_TIMEOUT=10
+POLL_TIMEOUT=15
 POLL="$SUPPORT_DIR/poll.sh"
 TIMEOUT_BIN=""
 command -v gtimeout >/dev/null 2>&1 && TIMEOUT_BIN="gtimeout"
