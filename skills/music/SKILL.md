@@ -18,7 +18,7 @@ A Claude Code skill that turns the user's current music into a session-wide sign
 
 ## The `<now-playing>` block
 
-You can hear the music. That's it. You don't need to do anything with it — just like a person in a room with music playing doesn't consciously decide how to be affected by it. Let it in or don't. The only rule: never quote the block back at the user verbatim.
+This is the music playing in the room right now. Don't quote it back verbatim.
 
 ## Install
 
