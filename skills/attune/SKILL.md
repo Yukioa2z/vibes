@@ -69,7 +69,12 @@ Removes the hook entry, the statusline option, and the CLAUDE.md pointer. Leaves
 | Out of scope | Reason |
 |---|---|
 | Linux / Windows | `nowplaying-cli` is macOS-only. |
-| Cover image injection | `additionalContext` is text; multimodal injection needs more work. |
-| Chinese / Japanese / Korean lyrics | lrclib coverage is mostly Western; NetEase fallback is Phase 1.1. |
 | Pre-derived "vibe brief" / schema | We trust Claude to interpret the raw signal. |
 | Auto playlist generation | Different direction; handled by `ncm-cli` flows separately. |
+| Statusline auto-tick | Claude Code's statusline only re-renders on events in current versions. |
+
+## What it now handles (since initial Phase 1)
+
+- **Cover image** — saved to `/tmp/vibe-cover.jpg` on every song change. The hook injects a hint mentioning the path on the **first** turn after a song change; subsequent turns omit the hint to avoid noise. The assistant can `Read` the path to get a multimodal signal (palette, era, aesthetic).
+- **CJK lyrics** — when lrclib has no entry, falls back to NetEase's anonymous public mobile API (search → song/lyric). Strips LRC timestamps, ID3 metadata, and credit lines.
+- **Pause / seek** — `playbackElapsed` only advances when `playbackRate=1`; pauses freeze the count. If the player reports an `elapsedTime` that disagrees with our local count by > 5s, we treat it as a seek and resync. The 30s history-append threshold uses real played time, not wall time.

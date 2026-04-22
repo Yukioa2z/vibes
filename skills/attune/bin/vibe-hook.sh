@@ -10,9 +10,11 @@
 set -uo pipefail
 
 CACHE="/tmp/vibe-current.json"
+COVER="/tmp/vibe-cover.jpg"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLL="$SCRIPT_DIR/vibe-poll.sh"
 HISTORY_PATH="~/.cache/vibe/play_history.md"  # rendered literal for the assistant
+COVER_PATH="/tmp/vibe-cover.jpg"
 STALE_AFTER=10  # seconds
 
 # Drain stdin (Claude Code sends UserPromptSubmit JSON we don't need).
@@ -28,7 +30,7 @@ emit_empty() {
 if [[ ! -f "$CACHE" ]]; then
   bash "$POLL" >/dev/null 2>&1 || true
 elif command -v jq >/dev/null 2>&1; then
-  LAST_TS="$(jq -r '.elapsedAtTimestamp // 0' "$CACHE" 2>/dev/null || echo 0)"
+  LAST_TS="$(jq -r '.lastTickAt // .elapsedAtTimestamp // 0' "$CACHE" 2>/dev/null || echo 0)"
   NOW="$(date +%s)"
   if (( NOW - LAST_TS > STALE_AFTER )); then
     bash "$POLL" >/dev/null 2>&1 || true
@@ -49,6 +51,16 @@ RECENT_LINES="$(jq -r '
   .recent // [] | to_entries | .[] |
   "  [-\(.key + 1)] \(.value.title) · \(.value.artist)"
 ' "$CACHE")"
+
+# Cover image hint: only on FIRST hook fire after a song change.
+# Note: jq's `// default` treats false as falsy too, so we use explicit
+# field presence checks instead.
+COVER_AVAILABLE="$(jq -r 'if .coverAvailable == true then "true" else "false" end' "$CACHE")"
+COVER_SHOWN="$(jq -r 'if .coverShownToHook == false then "false" else "true" end' "$CACHE")"
+INCLUDE_COVER=false
+if [[ "$COVER_AVAILABLE" == "true" && "$COVER_SHOWN" == "false" && -s "$COVER" ]]; then
+  INCLUDE_COVER=true
+fi
 
 PAUSED_TAG=""
 if [[ "$RATE" == "0" ]]; then
@@ -73,12 +85,22 @@ fi
     printf '\nRecent drift (last %d):\n' "$(jq -r '.recent | length' "$CACHE")"
     printf '%s\n' "$RECENT_LINES"
   fi
+  if [[ "$INCLUDE_COVER" == "true" ]]; then
+    printf '\n(Cover image at %s — Read it for the visual signal: palette, era, aesthetic. First mention only this turn.)\n' "$COVER_PATH"
+  fi
   printf '\n(Full play history: %s)\n' "$HISTORY_PATH"
   printf '</now-playing>\n'
 } > /tmp/vibe-hook-block.$$
 
 CONTEXT="$(cat /tmp/vibe-hook-block.$$)"
 rm -f /tmp/vibe-hook-block.$$
+
+# Mark the cover as shown so subsequent hook fires for the same song
+# don't repeat the hint.
+if [[ "$INCLUDE_COVER" == "true" ]]; then
+  TMP="$(mktemp)"
+  jq '.coverShownToHook = true' "$CACHE" > "$TMP" && mv -f "$TMP" "$CACHE"
+fi
 
 jq -n --arg ctx "$CONTEXT" '{
   hookSpecificOutput: {

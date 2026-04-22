@@ -11,6 +11,7 @@
 set -uo pipefail
 
 CACHE="/tmp/vibe-current.json"
+COVER="/tmp/vibe-cover.jpg"
 HISTORY="$HOME/.cache/vibe/play_history.md"
 SKIP_THRESHOLD=30
 RECENT_LIMIT=10
@@ -144,6 +145,22 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
   LYRICS_4="$(fetch_lyrics4)"
   [[ -z "$LYRICS_4" ]] && LYRICS_4="[]"
 
+  # Save the cover artwork as a JPEG so the hook can hint at its path
+  # and the assistant can Read it for a visual signal (color palette,
+  # era, aesthetic). Best-effort; missing artwork is silent.
+  nowplaying-cli get-raw 2>/dev/null | python3 -c '
+import json, sys, base64
+try:
+    d = json.load(sys.stdin)
+    art = d.get("kMRMediaRemoteNowPlayingInfoArtworkData")
+    if art:
+        open("'"$COVER"'", "wb").write(base64.b64decode(art))
+except Exception:
+    pass
+' 2>/dev/null || true
+  COVER_AVAILABLE=false
+  [[ -s "$COVER" ]] && COVER_AVAILABLE=true
+
   jq -n \
     --arg title "$TITLE" \
     --arg artist "$ARTIST" \
@@ -157,12 +174,14 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     --argjson playbackRate "$RATE" \
     --argjson lyrics4 "$LYRICS_4" \
     --argjson recent "$NEW_RECENT" \
+    --argjson coverAvailable "$COVER_AVAILABLE" \
     --arg startedAt "$ISO_NOW" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
       duration:$duration, initialElapsed:$initialElapsed,
       playbackElapsed:$playbackElapsed, lastTickAt:$lastTickAt,
       firstSeenAtUnix:$firstSeenAtUnix,
       playbackRate:$playbackRate, lyrics4:$lyrics4, recent:$recent,
+      coverAvailable:$coverAvailable, coverShownToHook:false,
       startedAt:$startedAt, loggedToHistory:false}' | write_cache
 
 else
