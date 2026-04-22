@@ -17,6 +17,8 @@ BIN_DIR="$REPO_DIR/bin"
 SETTINGS="$HOME/.claude/settings.json"
 STATUSLINES_DIR="$HOME/.claude/statuslines"
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
+SUPPORT_DIR="$HOME/Library/Application Support/vibe"
+PLIST="$HOME/Library/LaunchAgents/supply.vibe.poll.plist"
 HOOK_MARK="$BIN_DIR/vibe-hook.sh"
 
 say() { printf '\033[36m[attune]\033[0m %s\n' "$*"; }
@@ -50,6 +52,20 @@ if [[ -f "$CLAUDE_MD" ]] && grep -qF "vibe/play_history.md" "$CLAUDE_MD"; then
   tmp="$(mktemp)"
   grep -vF "vibe/play_history.md" "$CLAUDE_MD" > "$tmp" || true
   mv -f "$tmp" "$CLAUDE_MD"
+fi
+
+# 4. Stop and remove the launchd polling daemon.
+if [[ -f "$PLIST" ]]; then
+  say "unloading background poll daemon"
+  launchctl unload "$PLIST" 2>/dev/null || true
+  rm -f "$PLIST"
+fi
+
+# 5. Remove the launchd-friendly script copies (Application Support).
+if [[ -d "$SUPPORT_DIR" ]]; then
+  say "removing $SUPPORT_DIR"
+  rm -f "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/daemon.sh"
+  rmdir "$SUPPORT_DIR" 2>/dev/null || true
 fi
 
 say "done. ~/.cache/vibe/play_history.md left intact."

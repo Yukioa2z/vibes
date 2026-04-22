@@ -10,9 +10,10 @@ A Claude Code skill that turns the user's current music into a session-wide sign
 ## What it does
 
 - Detects the currently playing track on macOS (any player: Spotify, Apple Music, QQ Music, NetEase, browser tabs that use Media Session API…).
-- On every song change, fetches up to four lines of lyrics from [lrclib](https://lrclib.net/) and updates a cache at `/tmp/vibe-current.json`.
+- A launchd `KeepAlive` daemon runs `vibe-poll.sh` every 2 seconds, keeping the cache at `/tmp/vibe-current.json` fresh independently of Claude Code activity.
+- On every song change, fetches up to four lines of lyrics from [lrclib](https://lrclib.net/) and updates the cache.
 - Logs each track to `~/.cache/vibe/play_history.md` once it has been listened to for ≥ 30 seconds (skips don't count).
-- Renders an optional statusline row: `🎧 <title>  -<remaining>`.
+- Renders an optional statusline row: `🎧 <title>  -<remaining>`. Note: Claude Code's statusline only re-renders on events in current versions — when it renders it shows the latest cache, but the countdown does not visibly tick between events.
 - On every `UserPromptSubmit`, injects a `<now-playing>` block (track + lyrics + last 10 tracks) into the next assistant turn.
 
 ## How Claude should use the injected `<now-playing>` block
@@ -35,16 +36,11 @@ The installer:
 1. Verifies `nowplaying-cli`, `jq`, `curl`, `python3` are on PATH.
 2. Appends a UserPromptSubmit hook entry to `~/.claude/settings.json` (does not touch existing hooks).
 3. Writes `~/.claude/statuslines/attune.sh` as a new statusline-vibe option.
-4. Appends a one-line pointer to `~/.claude/CLAUDE.md` so the play history is discoverable from any cwd.
-5. Ensures `~/.cache/vibe/` exists.
+4. Copies `vibe-poll.sh` into `~/Library/Application Support/vibe/` (launchd cannot read scripts under `~/Documents/` due to TCC) and installs `~/Library/LaunchAgents/supply.vibe.poll.plist`, then `launchctl load`s it.
+5. Appends a one-line pointer to `~/.claude/CLAUDE.md` so the play history is discoverable from any cwd.
+6. Ensures `~/.cache/vibe/` exists.
 
-After install, the **hook is active for new Claude Code sessions**. To enable the 🎧 statusline this session:
-
-```bash
-echo attune > "/tmp/.claude-session-$PPID/vibe"
-```
-
-To make it the default for new sessions, edit `~/.claude/statusline-command.sh` and change the fallback from `pomodoro` to `attune`.
+After install, the **hook is active for new Claude Code sessions** and the daemon is already polling. To make 🎧 the default statusline, edit `~/.claude/statusline-command.sh` and change the fallback from `pomodoro` to `attune`.
 
 ## Uninstall
 
@@ -59,9 +55,12 @@ Removes the hook entry, the statusline option, and the CLAUDE.md pointer. Leaves
 | Path | Purpose |
 |---|---|
 | `bin/vibe-poll.sh` | Sensor: reads MediaRemote, diffs cache, fetches lyrics, rolls recent buffer, logs history. |
-| `bin/vibe-statusline.sh` | Statusline renderer; calls `vibe-poll.sh` first so polling and display share a tick. |
+| `bin/vibe-statusline.sh` | Statusline renderer; calls `vibe-poll.sh` first as a safety refresh. |
 | `bin/vibe-hook.sh` | UserPromptSubmit hook; pure cache reader, outputs `additionalContext`. |
 | `install.sh` / `uninstall.sh` | Idempotent setup / teardown. |
+| `~/Library/Application Support/vibe/poll.sh` | Copy of `vibe-poll.sh` accessible to launchd. |
+| `~/Library/Application Support/vibe/daemon.sh` | Long-running loop invoked by launchd; polls every 2s. |
+| `~/Library/LaunchAgents/supply.vibe.poll.plist` | launchd `KeepAlive` job that keeps `daemon.sh` running. |
 | `/tmp/vibe-current.json` | Source of truth (ephemeral). |
 | `~/.cache/vibe/play_history.md` | Append-only listening log (persistent). |
 

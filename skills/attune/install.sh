@@ -16,6 +16,9 @@ SETTINGS="$HOME/.claude/settings.json"
 STATUSLINES_DIR="$HOME/.claude/statuslines"
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 HISTORY_DIR="$HOME/.cache/vibe"
+SUPPORT_DIR="$HOME/Library/Application Support/vibe"
+PLIST="$HOME/Library/LaunchAgents/supply.vibe.poll.plist"
+PLIST_LABEL="supply.vibe.poll"
 
 HOOK_CMD="bash \"$BIN_DIR/vibe-hook.sh\""
 HOOK_MARK="$BIN_DIR/vibe-hook.sh"
@@ -31,7 +34,7 @@ for bin in nowplaying-cli jq curl python3; do
 done
 
 # ── 2. ensure dirs ──────────────────────────────────────────────────
-mkdir -p "$STATUSLINES_DIR" "$HISTORY_DIR" "$(dirname "$SETTINGS")"
+mkdir -p "$STATUSLINES_DIR" "$HISTORY_DIR" "$(dirname "$SETTINGS")" "$SUPPORT_DIR" "$(dirname "$PLIST")"
 
 # ── 3. patch settings.json (append hook, don't clobber) ─────────────
 say "registering UserPromptSubmit hook"
@@ -69,7 +72,64 @@ exec "$BIN_DIR/vibe-statusline.sh"
 EOF
 chmod +x "$STATUSLINES_DIR/attune.sh"
 
-# ── 5. CLAUDE.md pointer (idempotent) ───────────────────────────────
+# ── 5. background polling daemon ────────────────────────────────────
+# Claude Code's statusline timer is unreliable in current versions and
+# nothing else triggers vibe-poll.sh between user messages. A launchd
+# KeepAlive job runs a loop with `sleep 2` so the cache stays fresh and
+# the 30s history-append threshold fires regardless of user activity.
+# Source files must live outside ~/Documents because launchd-spawned
+# processes lack TCC access there.
+say "installing background poll daemon"
+cp "$BIN_DIR/vibe-poll.sh" "$SUPPORT_DIR/poll.sh"
+chmod +x "$SUPPORT_DIR/poll.sh"
+cat > "$SUPPORT_DIR/daemon.sh" <<EOF
+#!/bin/bash
+# Long-running poll loop. macOS throttles short StartInterval values,
+# so we use one persistent process kept alive by launchd instead.
+INTERVAL=2
+POLL="$SUPPORT_DIR/poll.sh"
+while true; do
+  /bin/bash "\$POLL" 2>>/tmp/vibe-poll.err
+  sleep "\$INTERVAL"
+done
+EOF
+chmod +x "$SUPPORT_DIR/daemon.sh"
+
+cat > "$PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>$PLIST_LABEL</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>$SUPPORT_DIR/daemon.sh</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/dev/null</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/vibe-poll.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
+EOF
+
+# Reload (unload then load) so changes to plist or scripts take effect.
+launchctl unload "$PLIST" 2>/dev/null || true
+launchctl load "$PLIST"
+say "  daemon loaded ($PLIST_LABEL)"
+
+# ── 6. CLAUDE.md pointer (idempotent) ───────────────────────────────
 say "ensuring play-history pointer in $CLAUDE_MD"
 touch "$CLAUDE_MD"
 if grep -qF "vibe/play_history.md" "$CLAUDE_MD"; then
@@ -83,20 +143,27 @@ say "done."
 cat <<'INSTRUCT'
 
 Next steps:
-  1. Hook is active for any NEW Claude Code session. Existing sessions won't see it.
+  1. The hook is now active for any NEW Claude Code session. Existing
+     sessions won't see it until you /clear or restart.
 
-  2. To enable the 🎧 statusline in your CURRENT session, run:
-       echo attune > "/tmp/.claude-session-$PPID/vibe"
-     (Run inside the Claude Code terminal session, not from outside.)
-
-     To make it the default for new sessions, edit
-     ~/.claude/statusline-command.sh and change the fallback "pomodoro"
-     to "attune".
-
-  3. Verify the cache after a song change:
+  2. The launchd daemon is already running and polling every 2s. Cache
+     stays fresh whether or not you're talking to Claude. Verify:
        cat /tmp/vibe-current.json
+       launchctl list | grep supply.vibe.poll
+
+  3. To enable the 🎧 statusline as your default vibe, edit
+     ~/.claude/statusline-command.sh and change the fallback from
+     "pomodoro" to "attune". (Per-session vibe files don't reliably
+     work because Claude Code's PPID rotates between statusline ticks.)
 
   4. Verify history append after listening to a song for 30s+:
        tail -n 5 ~/.cache/vibe/play_history.md
+
+  5. Note: Claude Code's statusline doesn't auto-refresh on a timer in
+     current versions — it only re-renders on events (new assistant
+     message, mode change, etc.). The daemon keeps the cache fresh so
+     when statusline DOES render, it shows the latest. The countdown
+     therefore won't tick visually between events; that's a Claude Code
+     limitation, not an attune bug.
 
 INSTRUCT
