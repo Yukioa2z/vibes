@@ -16,7 +16,9 @@ HISTORY="$HOME/.cache/vibe/play_history.md"
 LOCK="/tmp/vibe-poll.lock"
 SKIP_THRESHOLD=30
 RECENT_LIMIT=10
-LOCK_STALE_AFTER=30  # seconds before a held lock is treated as crashed
+LOCK_STALE_AFTER=10  # seconds before a held lock is treated as crashed
+                     # (daemon polls every 2s and a healthy poll
+                     # finishes in <1s, so 10s already means "stuck")
 
 # ── Atomic single-writer lock (mkdir is POSIX-atomic) ────────────────
 # The launchd daemon runs every 2s; the prompt hook may also call us as

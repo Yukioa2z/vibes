@@ -95,10 +95,20 @@ cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 #!/bin/bash
 # Long-running poll loop. macOS throttles short StartInterval values,
 # so we use one persistent process kept alive by launchd instead.
+# Each poll is hard-bounded so a hung curl or wedged nowplaying-cli
+# call can't pin the daemon and stale the cache.
 INTERVAL=2
+POLL_TIMEOUT=10
 POLL="$SUPPORT_DIR/poll.sh"
+TIMEOUT_BIN=""
+command -v gtimeout >/dev/null 2>&1 && TIMEOUT_BIN="gtimeout"
+[[ -z "\$TIMEOUT_BIN" ]] && command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout"
 while true; do
-  /bin/bash "\$POLL" 2>>/tmp/vibe-poll.err
+  if [[ -n "\$TIMEOUT_BIN" ]]; then
+    "\$TIMEOUT_BIN" "\$POLL_TIMEOUT" /bin/bash "\$POLL" 2>>/tmp/vibe-poll.err
+  else
+    /bin/bash "\$POLL" 2>>/tmp/vibe-poll.err
+  fi
   sleep "\$INTERVAL"
 done
 EOF
