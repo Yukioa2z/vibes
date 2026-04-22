@@ -23,7 +23,7 @@ TITLE="$(jq -r '.title // ""' "$CACHE")"
 [[ -z "$TITLE" ]] && exit 0
 
 DURATION="$(jq -r '.duration // 0' "$CACHE")"
-PLAYED="$(jq -r '.playbackElapsed // .initialElapsed // 0' "$CACHE")"
+POSITION="$(jq -r '.playbackPosition // .playbackElapsed // .initialElapsed // 0' "$CACHE")"
 LAST_TICK="$(jq -r '.lastTickAt // .firstSeenAtUnix // 0' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
 
@@ -33,10 +33,10 @@ if [[ "$RATE" == "0" ]]; then
 fi
 
 NOW="$(date +%s)"
-# playbackElapsed is the cache's authoritative played-seconds counter.
-# Interpolate forward from lastTickAt so the displayed countdown stays
-# fresh between daemon polls. Pause/seek are already handled in poll.
-LIVE_ELAPSED=$(( PLAYED + (NOW - LAST_TICK) ))
+# Use playbackPosition (player's real position in the track) — this is
+# what reflects seeks correctly. Interpolate from lastTickAt so the
+# countdown stays fresh between daemon polls.
+LIVE_ELAPSED=$(( POSITION + (NOW - LAST_TICK) ))
 REMAINING=$(( DURATION - LIVE_ELAPSED ))
 (( REMAINING < 0 )) && REMAINING=0
 

@@ -13,9 +13,31 @@ set -uo pipefail
 CACHE="/tmp/vibe-current.json"
 COVER="/tmp/vibe-cover.jpg"
 HISTORY="$HOME/.cache/vibe/play_history.md"
+LOCK="/tmp/vibe-poll.lock"
 SKIP_THRESHOLD=30
 RECENT_LIMIT=10
-SEEK_JUMP_THRESHOLD=5  # seconds of player-elapsed disagreement → treat as seek
+LOCK_STALE_AFTER=30  # seconds before a held lock is treated as crashed
+
+# ── Atomic single-writer lock (mkdir is POSIX-atomic) ────────────────
+# The launchd daemon runs every 2s; the prompt hook may also call us as
+# a safety refresh; the statusline used to. Without a lock, two pollers
+# can both cross the SKIP_THRESHOLD between read and write and append
+# the same history line. mkdir guarantees only one process succeeds.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # Reclaim a stale lock from a crashed previous run.
+  if [[ -d "$LOCK" ]]; then
+    LOCK_AGE=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+    if (( LOCK_AGE > LOCK_STALE_AFTER )); then
+      rmdir "$LOCK" 2>/dev/null
+      mkdir "$LOCK" 2>/dev/null || exit 0
+    else
+      exit 0
+    fi
+  else
+    exit 0
+  fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM HUP
 
 mkdir -p "$(dirname "$HISTORY")"
 
@@ -75,6 +97,7 @@ PREV_TITLE=""
 PREV_ARTIST=""
 PREV_RECENT="[]"
 PREV_PLAYED=0
+PREV_POSITION=0
 PREV_TICK_AT="$NOW"
 if [[ -f "$CACHE" ]]; then
   PREV_TRACK_KEY="$(jq -r '.trackKey // ""' "$CACHE" 2>/dev/null || echo "")"
@@ -83,6 +106,7 @@ if [[ -f "$CACHE" ]]; then
   PREV_ARTIST="$(jq -r '.artist // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_RECENT="$(jq -c '.recent // []' "$CACHE" 2>/dev/null || echo "[]")"
   PREV_PLAYED="$(jq -r '.playbackElapsed // 0' "$CACHE" 2>/dev/null || echo 0)"
+  PREV_POSITION="$(jq -r '.playbackPosition // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_TICK_AT="$(jq -r '.lastTickAt // 0' "$CACHE" 2>/dev/null || echo "$NOW")"
 fi
 
@@ -207,9 +231,10 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
   LYRICS_4="$(fetch_lyrics4)"
   [[ -z "$LYRICS_4" ]] && LYRICS_4="[]"
 
-  # Save the cover artwork as a JPEG so the hook can hint at its path
-  # and the assistant can Read it for a visual signal (color palette,
-  # era, aesthetic). Best-effort; missing artwork is silent.
+  # Cover artwork: ALWAYS clear the file first so a song without
+  # artwork doesn't keep showing the previous song's cover. Then try
+  # the dump. coverAvailable reflects whether THIS fetch produced data.
+  rm -f "$COVER"
   nowplaying-cli get-raw 2>/dev/null | python3 -c '
 import json, sys, base64
 try:
@@ -223,6 +248,9 @@ except Exception:
   COVER_AVAILABLE=false
   [[ -s "$COVER" ]] && COVER_AVAILABLE=true
 
+  # Played time starts at 0: even if the player begins mid-track (e.g.
+  # the user joined a song already in progress), we only count what
+  # WE actually observed. Player position starts at the player's value.
   jq -n \
     --arg title "$TITLE" \
     --arg artist "$ARTIST" \
@@ -230,7 +258,8 @@ except Exception:
     --arg trackKey "$TRACK_KEY" \
     --argjson duration "$DURATION" \
     --argjson initialElapsed "$ELAPSED" \
-    --argjson playbackElapsed "$ELAPSED" \
+    --argjson playbackElapsed 0 \
+    --argjson playbackPosition "$ELAPSED" \
     --argjson lastTickAt "$NOW" \
     --argjson firstSeenAtUnix "$NOW" \
     --argjson playbackRate "$RATE" \
@@ -240,45 +269,52 @@ except Exception:
     --arg startedAt "$ISO_NOW" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
       duration:$duration, initialElapsed:$initialElapsed,
-      playbackElapsed:$playbackElapsed, lastTickAt:$lastTickAt,
-      firstSeenAtUnix:$firstSeenAtUnix,
+      playbackElapsed:$playbackElapsed, playbackPosition:$playbackPosition,
+      lastTickAt:$lastTickAt, firstSeenAtUnix:$firstSeenAtUnix,
       playbackRate:$playbackRate, lyrics4:$lyrics4, recent:$recent,
       coverAvailable:$coverAvailable, coverShownToHook:false,
       startedAt:$startedAt, loggedToHistory:false}' | write_cache
 
 else
   # ── Same song ────────────────────────────────────────────────────────
-  # Pause-aware advance: only accumulate playtime when rate=1.
+  # Two independent counters:
+  #   playbackElapsed = SECONDS HEARD (used for the 30s history threshold).
+  #     Only ever += DELTA when rate=1. Never set from player position;
+  #     a seek is not "listening time".
+  #   playbackPosition = WHERE IN THE TRACK the player is (used for the
+  #     statusline countdown). Trusts player's elapsed when reported,
+  #     interpolates otherwise.
   DELTA=$(( NOW - PREV_TICK_AT ))
   if (( DELTA < 0 )); then DELTA=0; fi
+
   if (( RATE == 1 )); then
     NEW_PLAYED=$(( PREV_PLAYED + DELTA ))
   else
     NEW_PLAYED=$PREV_PLAYED
   fi
 
-  # Seek detection: if the player reports a fresh elapsed value that
-  # disagrees with our local count by more than SEEK_JUMP_THRESHOLD,
-  # trust the player and resync. (Players that always report 0 won't
-  # trigger this; players that do report will keep us aligned.)
   if (( ELAPSED > 0 )); then
-    DIFF=$(( ELAPSED > NEW_PLAYED ? ELAPSED - NEW_PLAYED : NEW_PLAYED - ELAPSED ))
-    if (( DIFF > SEEK_JUMP_THRESHOLD )); then
-      NEW_PLAYED=$ELAPSED
-    fi
+    NEW_POSITION=$ELAPSED
+  elif (( RATE == 1 )); then
+    NEW_POSITION=$(( PREV_POSITION + DELTA ))
+  else
+    NEW_POSITION=$PREV_POSITION
   fi
 
   jq \
     --argjson playbackElapsed "$NEW_PLAYED" \
+    --argjson playbackPosition "$NEW_POSITION" \
     --argjson lastTickAt "$NOW" \
     --argjson playbackRate "$RATE" \
     '.playbackElapsed = $playbackElapsed
+     | .playbackPosition = $playbackPosition
      | .lastTickAt = $lastTickAt
      | .playbackRate = $playbackRate' \
     "$CACHE" | write_cache
 
-  # First crossing of the skip threshold (using actual played time, not
-  # wall time). Skip ads — they shouldn't pollute long-term history.
+  # First crossing of the skip threshold (using actual heard time, not
+  # player position — so seeking past 30s doesn't auto-log a track the
+  # user never actually listened to). Skip ads.
   if [[ "$PREV_LOGGED" == "false" && "$NEW_PLAYED" -ge "$SKIP_THRESHOLD" \
         && "$(is_ad "$TITLE" "$ARTIST")" == "false" ]]; then
     printf '%s\n' "- ${ISO_NOW} — ${TITLE} · ${ARTIST}" >> "$HISTORY"
