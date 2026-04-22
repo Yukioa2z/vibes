@@ -13,7 +13,7 @@ A Claude Code skill that turns the user's current music into a session-wide sign
 - A launchd `KeepAlive` daemon runs `vibe-poll.sh` every 2 seconds, keeping the cache at `/tmp/vibe-current.json` fresh independently of Claude Code activity.
 - On every song change, fetches up to four lines of lyrics from [lrclib](https://lrclib.net/) and updates the cache.
 - Logs each track to `~/.cache/vibe/play_history.md` once it has been listened to for ≥ 30 seconds (skips don't count).
-- Renders an optional statusline row: `🎧 <title>  -<remaining>`. Note: Claude Code's statusline only re-renders on events in current versions — when it renders it shows the latest cache, but the countdown does not visibly tick between events.
+- Renders an optional statusline row: `🎧 <title>  -<remaining>`, **appended below your existing statusline content** (the `attune` vibe composes with whatever base vibe you already use — default `pomodoro`; override with `VIBE_BASE`). Note: Claude Code's statusline only re-renders on events in current versions — when it renders it shows the latest cache, but the countdown does not visibly tick between events.
 - On every `UserPromptSubmit`, injects a `<now-playing>` block (track + lyrics + last 10 tracks) into the next assistant turn.
 
 ## How Claude should use the injected `<now-playing>` block
