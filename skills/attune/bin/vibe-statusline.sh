@@ -23,8 +23,8 @@ TITLE="$(jq -r '.title // ""' "$CACHE")"
 [[ -z "$TITLE" ]] && exit 0
 
 DURATION="$(jq -r '.duration // 0' "$CACHE")"
-INITIAL_ELAPSED="$(jq -r '.initialElapsed // .elapsedAt // 0' "$CACHE")"
-FIRST_SEEN="$(jq -r '.firstSeenAtUnix // .elapsedAtTimestamp // 0' "$CACHE")"
+PLAYED="$(jq -r '.playbackElapsed // .initialElapsed // 0' "$CACHE")"
+LAST_TICK="$(jq -r '.lastTickAt // .firstSeenAtUnix // 0' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
 
 if [[ "$RATE" == "0" ]]; then
@@ -33,9 +33,10 @@ if [[ "$RATE" == "0" ]]; then
 fi
 
 NOW="$(date +%s)"
-# Interpolate from when we first saw the song. Works even when the player
-# never updates elapsedTime (e.g. some browser tabs and third-party players).
-LIVE_ELAPSED=$(( INITIAL_ELAPSED + (NOW - FIRST_SEEN) ))
+# playbackElapsed is the cache's authoritative played-seconds counter.
+# Interpolate forward from lastTickAt so the displayed countdown stays
+# fresh between daemon polls. Pause/seek are already handled in poll.
+LIVE_ELAPSED=$(( PLAYED + (NOW - LAST_TICK) ))
 REMAINING=$(( DURATION - LIVE_ELAPSED ))
 (( REMAINING < 0 )) && REMAINING=0
 

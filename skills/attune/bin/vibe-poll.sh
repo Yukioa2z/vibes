@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # vibe-poll.sh — core sensor for the attune skill.
 # Reads MediaRemote, diffs against cache, fetches lyrics on song change,
-# rolls a "recent[10]" buffer, and appends to global play history once
-# a song has been listened to for >= SKIP_THRESHOLD seconds.
+# rolls a "recent[10]" buffer, tracks pause-aware playback elapsed, and
+# appends to global play history once a song has been listened to for
+# >= SKIP_THRESHOLD seconds of actual playtime.
 #
-# Idempotent. Safe to call as often as the statusline pings (every ~2s)
-# and also as a safety refresh from the prompt hook.
+# Idempotent. Safe to call as often as the daemon pings (every ~2s)
+# and as a safety refresh from the prompt hook.
 
 set -uo pipefail
 
@@ -13,6 +14,7 @@ CACHE="/tmp/vibe-current.json"
 HISTORY="$HOME/.cache/vibe/play_history.md"
 SKIP_THRESHOLD=30
 RECENT_LIMIT=10
+SEEK_JUMP_THRESHOLD=5  # seconds of player-elapsed disagreement → treat as seek
 
 mkdir -p "$(dirname "$HISTORY")"
 
@@ -48,18 +50,81 @@ PREV_LOGGED="false"
 PREV_TITLE=""
 PREV_ARTIST=""
 PREV_RECENT="[]"
+PREV_PLAYED=0
+PREV_TICK_AT="$NOW"
 if [[ -f "$CACHE" ]]; then
   PREV_TRACK_KEY="$(jq -r '.trackKey // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_LOGGED="$(jq -r '.loggedToHistory // false' "$CACHE" 2>/dev/null || echo "false")"
   PREV_TITLE="$(jq -r '.title // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_ARTIST="$(jq -r '.artist // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_RECENT="$(jq -c '.recent // []' "$CACHE" 2>/dev/null || echo "[]")"
+  PREV_PLAYED="$(jq -r '.playbackElapsed // 0' "$CACHE" 2>/dev/null || echo 0)"
+  PREV_TICK_AT="$(jq -r '.lastTickAt // 0' "$CACHE" 2>/dev/null || echo "$NOW")"
 fi
 
 write_cache() {
   local tmp; tmp="$(mktemp)"
   cat > "$tmp"
   mv -f "$tmp" "$CACHE"
+}
+
+# ── Lyrics fetch: lrclib first, NetEase public API as CJK fallback ──
+fetch_lyrics4() {
+  # 1) lrclib (Western coverage)
+  local raw
+  raw="$(curl -fsS --max-time 2 -G "https://lrclib.net/api/get" \
+    --data-urlencode "artist_name=$ARTIST" \
+    --data-urlencode "track_name=$TITLE" \
+    --data-urlencode "album_name=$ALBUM" 2>/dev/null || echo '{}')"
+  local plain
+  plain="$(printf '%s' "$raw" | jq -r '.plainLyrics // ""' 2>/dev/null)"
+  if [[ -n "$plain" ]]; then
+    printf '%s' "$plain" | awk 'NF' | head -4 | jq -R . | jq -s .
+    return
+  fi
+
+  # 2) NetEase public API fallback (anonymous, no auth) for CJK coverage
+  local query="$ARTIST $TITLE"
+  local search
+  search="$(curl -fsS --max-time 3 -G "https://music.163.com/api/search/get" \
+    -H "Referer: https://music.163.com/" \
+    --data-urlencode "s=$query" \
+    --data-urlencode "type=1" \
+    --data-urlencode "limit=1" 2>/dev/null || echo '{}')"
+  local songid
+  songid="$(printf '%s' "$search" | jq -r '.result.songs[0].id // empty' 2>/dev/null)"
+  if [[ -n "$songid" ]]; then
+    local lrc
+    lrc="$(curl -fsS --max-time 3 "https://music.163.com/api/song/lyric?id=${songid}&lv=-1&tv=-1" \
+      -H "Referer: https://music.163.com/" 2>/dev/null || echo '{}')"
+    local raw_lrc
+    raw_lrc="$(printf '%s' "$lrc" | jq -r '.lrc.lyric // ""' 2>/dev/null)"
+    if [[ -n "$raw_lrc" ]]; then
+      # LRC is "[mm:ss.xx]words" — strip timestamps, drop blanks, drop LRC
+      # ID3 meta (ti:/ar:/al:), and drop ALL credit lines (heuristic: any
+      # line whose pre-colon prefix is ≤ 8 chars of CJK/letters and is
+      # followed by ":" or "：" — that pattern is universally "role : name"
+      # in NetEase lyrics, never lyric content).
+      printf '%s' "$raw_lrc" \
+        | sed -E 's/\[[0-9:.]+\]//g' \
+        | python3 -c '
+import sys, re, json
+LRC_META = re.compile(r"^[A-Za-z]{2,4}\s*:\s*\S")
+CREDIT   = re.compile(r"^\s*\S{1,8}\s*[:：]\s*\S")
+out = []
+for line in sys.stdin:
+    s = line.strip()
+    if not s: continue
+    if LRC_META.match(s) or CREDIT.match(s): continue
+    out.append(s)
+    if len(out) >= 4: break
+print(json.dumps(out, ensure_ascii=False))
+'
+      return
+    fi
+  fi
+
+  printf '[]'
 }
 
 if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
@@ -76,16 +141,7 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     NEW_RECENT="$PREV_RECENT"
   fi
 
-  # Best-effort lyrics from lrclib (2s timeout; failure is silent).
-  LYRICS_RAW="$(curl -fsS --max-time 2 -G "https://lrclib.net/api/get" \
-    --data-urlencode "artist_name=$ARTIST" \
-    --data-urlencode "track_name=$TITLE" \
-    --data-urlencode "album_name=$ALBUM" 2>/dev/null || echo '{}')"
-  LYRICS_4="$(printf '%s' "$LYRICS_RAW" \
-    | jq -r '.plainLyrics // ""' \
-    | awk 'NF' \
-    | head -4 \
-    | jq -R . | jq -s . 2>/dev/null || echo '[]')"
+  LYRICS_4="$(fetch_lyrics4)"
   [[ -z "$LYRICS_4" ]] && LYRICS_4="[]"
 
   jq -n \
@@ -95,32 +151,53 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     --arg trackKey "$TRACK_KEY" \
     --argjson duration "$DURATION" \
     --argjson initialElapsed "$ELAPSED" \
+    --argjson playbackElapsed "$ELAPSED" \
+    --argjson lastTickAt "$NOW" \
     --argjson firstSeenAtUnix "$NOW" \
-    --argjson elapsedAt "$ELAPSED" \
-    --argjson elapsedAtTimestamp "$NOW" \
     --argjson playbackRate "$RATE" \
     --argjson lyrics4 "$LYRICS_4" \
     --argjson recent "$NEW_RECENT" \
     --arg startedAt "$ISO_NOW" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
-      duration:$duration, initialElapsed:$initialElapsed, firstSeenAtUnix:$firstSeenAtUnix,
-      elapsedAt:$elapsedAt, elapsedAtTimestamp:$elapsedAtTimestamp,
+      duration:$duration, initialElapsed:$initialElapsed,
+      playbackElapsed:$playbackElapsed, lastTickAt:$lastTickAt,
+      firstSeenAtUnix:$firstSeenAtUnix,
       playbackRate:$playbackRate, lyrics4:$lyrics4, recent:$recent,
       startedAt:$startedAt, loggedToHistory:false}' | write_cache
 
 else
   # ── Same song ────────────────────────────────────────────────────────
+  # Pause-aware advance: only accumulate playtime when rate=1.
+  DELTA=$(( NOW - PREV_TICK_AT ))
+  if (( DELTA < 0 )); then DELTA=0; fi
+  if (( RATE == 1 )); then
+    NEW_PLAYED=$(( PREV_PLAYED + DELTA ))
+  else
+    NEW_PLAYED=$PREV_PLAYED
+  fi
+
+  # Seek detection: if the player reports a fresh elapsed value that
+  # disagrees with our local count by more than SEEK_JUMP_THRESHOLD,
+  # trust the player and resync. (Players that always report 0 won't
+  # trigger this; players that do report will keep us aligned.)
+  if (( ELAPSED > 0 )); then
+    DIFF=$(( ELAPSED > NEW_PLAYED ? ELAPSED - NEW_PLAYED : NEW_PLAYED - ELAPSED ))
+    if (( DIFF > SEEK_JUMP_THRESHOLD )); then
+      NEW_PLAYED=$ELAPSED
+    fi
+  fi
+
   jq \
-    --argjson elapsedAt "$ELAPSED" \
-    --argjson elapsedAtTimestamp "$NOW" \
+    --argjson playbackElapsed "$NEW_PLAYED" \
+    --argjson lastTickAt "$NOW" \
     --argjson playbackRate "$RATE" \
-    '.elapsedAt = $elapsedAt
-     | .elapsedAtTimestamp = $elapsedAtTimestamp
+    '.playbackElapsed = $playbackElapsed
+     | .lastTickAt = $lastTickAt
      | .playbackRate = $playbackRate' \
     "$CACHE" | write_cache
 
-  # First crossing of the skip threshold → log to history exactly once.
-  if [[ "$PREV_LOGGED" == "false" && "$ELAPSED" -ge "$SKIP_THRESHOLD" ]]; then
+  # First crossing of the skip threshold (using actual played time, not wall time).
+  if [[ "$PREV_LOGGED" == "false" && "$NEW_PLAYED" -ge "$SKIP_THRESHOLD" ]]; then
     printf '%s\n' "- ${ISO_NOW} — ${TITLE} · ${ARTIST}" >> "$HISTORY"
     jq '.loggedToHistory = true' "$CACHE" | write_cache
   fi
