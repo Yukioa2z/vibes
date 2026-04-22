@@ -241,12 +241,17 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
   # ── New song ─────────────────────────────────────────────────────────
   # Push previous track onto the front of the recent buffer (cap at
   # RECENT_LIMIT) — but skip ads to keep drift signal clean.
+  PREV_WAS_SKIP=false
   if [[ -n "$PREV_TRACK_KEY" && "$(is_ad "$PREV_TITLE" "$PREV_ARTIST")" == "false" ]]; then
+    # A song listened to < SKIP_THRESHOLD seconds counts as a skip.
+    (( PREV_PLAYED < SKIP_THRESHOLD )) && PREV_WAS_SKIP=true
     NEW_RECENT="$(jq -c \
       --arg t "$PREV_TITLE" \
       --arg a "$PREV_ARTIST" \
+      --arg al "$( jq -r '.album // ""' "$CACHE" 2>/dev/null )" \
       --argjson ts "$NOW" \
-      "[{title:\$t, artist:\$a, ts:\$ts}] + . | .[0:${RECENT_LIMIT}]" \
+      --argjson skipped "$PREV_WAS_SKIP" \
+      "[{title:\$t, artist:\$a, album:\$al, ts:\$ts, skipped:\$skipped}] + . | .[0:${RECENT_LIMIT}]" \
       <<<"$PREV_RECENT")"
   else
     NEW_RECENT="$PREV_RECENT"
@@ -304,6 +309,56 @@ except Exception:
       coverAvailable:$coverAvailable, coverShownToHook:false,
       startedAt:$startedAt, loggedToHistory:false}
       + $enrich' | write_cache
+
+  # ── Behavioral signals ─────────────────────────────────────────────
+  # Derive listening mode from the recent buffer. Computed once on song
+  # change, then baked into the cache for the hook to read.
+  BEHAVIOR="$(ENRICH_TITLE="$TITLE" ENRICH_ARTIST="$ARTIST" ENRICH_ALBUM="$ALBUM" python3 -c '
+import json, os, sys
+
+title = os.environ.get("ENRICH_TITLE", "")
+artist = os.environ.get("ENRICH_ARTIST", "")
+album = os.environ.get("ENRICH_ALBUM", "")
+
+try:
+    with open("/tmp/vibe-current.json") as f:
+        cache = json.load(f)
+except Exception:
+    sys.exit(0)
+
+recent = cache.get("recent", [])
+
+# Count skips
+skips = sum(1 for r in recent if r.get("skipped"))
+
+# Count consecutive repeats of current song
+repeats = sum(1 for r in recent if r.get("title") == title and r.get("artist") == artist) + 1
+
+# Count same-album run in last 5
+album_run = 0
+if album:
+    album_run = sum(1 for r in recent[:5] if r.get("album") == album) + 1
+
+# Derive mode
+if repeats >= 2:
+    mode = "on-repeat"
+elif skips >= 3:
+    mode = "restless"
+elif album_run >= 3:
+    mode = "deep-listening"
+else:
+    mode = "flowing"
+
+cache["recentSkips"] = skips
+cache["consecutiveRepeats"] = repeats
+cache["sameAlbumRun"] = album_run
+cache["listeningMode"] = mode
+
+print(json.dumps(cache))
+' 2>/dev/null)" || true
+  if [[ -n "$BEHAVIOR" ]]; then
+    printf '%s' "$BEHAVIOR" | write_cache
+  fi
 
 else
   # ── Same song ────────────────────────────────────────────────────────

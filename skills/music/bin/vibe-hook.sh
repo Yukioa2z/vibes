@@ -56,9 +56,13 @@ GENRE_LINE="$(jq -r '
   else ""
   end
 ' "$CACHE" 2>/dev/null)"
+# Behavioral signals
+LISTENING_MODE="$(jq -r '.listeningMode // ""' "$CACHE" 2>/dev/null)"
+RECENT_SKIPS="$(jq -r '.recentSkips // 0' "$CACHE" 2>/dev/null)"
+CONSECUTIVE_REPEATS="$(jq -r '.consecutiveRepeats // 1' "$CACHE" 2>/dev/null)"
 RECENT_LINES="$(jq -r '
   .recent // [] | to_entries | .[] |
-  "  [-\(.key + 1)] \(.value.title) · \(.value.artist)"
+  "  [-\(.key + 1)] \(.value.title) · \(.value.artist)\(if .value.skipped == true then " (skipped)" else "" end)"
 ' "$CACHE")"
 
 # Cover image hint: only on FIRST hook fire after a song change.
@@ -86,6 +90,13 @@ fi
   fi
   if [[ -n "$GENRE_LINE" ]]; then
     printf 'Genre: %s\n' "$GENRE_LINE"
+  fi
+  if [[ -n "$LISTENING_MODE" && "$LISTENING_MODE" != "flowing" ]]; then
+    case "$LISTENING_MODE" in
+      on-repeat)   printf 'Listening: on repeat (%sx)\n' "$CONSECUTIVE_REPEATS" ;;
+      restless)    printf 'Listening: restless (%s skips recently)\n' "$RECENT_SKIPS" ;;
+      deep-listening) printf 'Listening: deep listening (same album)\n' ;;
+    esac
   fi
   if [[ -n "$LYRICS_LINES" ]]; then
     printf 'Lyrics:\n'
