@@ -23,8 +23,8 @@ TITLE="$(jq -r '.title // ""' "$CACHE")"
 [[ -z "$TITLE" ]] && exit 0
 
 DURATION="$(jq -r '.duration // 0' "$CACHE")"
-ELAPSED_AT="$(jq -r '.elapsedAt // 0' "$CACHE")"
-ELAPSED_TS="$(jq -r '.elapsedAtTimestamp // 0' "$CACHE")"
+INITIAL_ELAPSED="$(jq -r '.initialElapsed // .elapsedAt // 0' "$CACHE")"
+FIRST_SEEN="$(jq -r '.firstSeenAtUnix // .elapsedAtTimestamp // 0' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
 
 if [[ "$RATE" == "0" ]]; then
@@ -33,7 +33,9 @@ if [[ "$RATE" == "0" ]]; then
 fi
 
 NOW="$(date +%s)"
-LIVE_ELAPSED=$(( ELAPSED_AT + (NOW - ELAPSED_TS) ))
+# Interpolate from when we first saw the song. Works even when the player
+# never updates elapsedTime (e.g. some browser tabs and third-party players).
+LIVE_ELAPSED=$(( INITIAL_ELAPSED + (NOW - FIRST_SEEN) ))
 REMAINING=$(( DURATION - LIVE_ELAPSED ))
 (( REMAINING < 0 )) && REMAINING=0
 

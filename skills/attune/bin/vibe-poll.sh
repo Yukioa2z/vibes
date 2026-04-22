@@ -94,6 +94,8 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     --arg album "$ALBUM" \
     --arg trackKey "$TRACK_KEY" \
     --argjson duration "$DURATION" \
+    --argjson initialElapsed "$ELAPSED" \
+    --argjson firstSeenAtUnix "$NOW" \
     --argjson elapsedAt "$ELAPSED" \
     --argjson elapsedAtTimestamp "$NOW" \
     --argjson playbackRate "$RATE" \
@@ -101,7 +103,8 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     --argjson recent "$NEW_RECENT" \
     --arg startedAt "$ISO_NOW" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
-      duration:$duration, elapsedAt:$elapsedAt, elapsedAtTimestamp:$elapsedAtTimestamp,
+      duration:$duration, initialElapsed:$initialElapsed, firstSeenAtUnix:$firstSeenAtUnix,
+      elapsedAt:$elapsedAt, elapsedAtTimestamp:$elapsedAtTimestamp,
       playbackRate:$playbackRate, lyrics4:$lyrics4, recent:$recent,
       startedAt:$startedAt, loggedToHistory:false}' | write_cache
 
