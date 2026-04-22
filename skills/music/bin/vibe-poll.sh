@@ -402,7 +402,13 @@ else
   # user never actually listened to). Skip ads.
   if [[ "$PREV_LOGGED" == "false" && "$NEW_PLAYED" -ge "$SKIP_THRESHOLD" \
         && "$(is_ad "$TITLE" "$ARTIST")" == "false" ]]; then
-    printf '%s\n' "- ${ISO_NOW} — ${TITLE} · ${ARTIST}" >> "$HISTORY"
+    HIST_GENRE="$(jq -r '
+      if (.genres // []) | length > 0 then " [" + (.genres | join(", ")) + "]"
+      elif (.genre // "") != "" then " [" + .genre + "]"
+      else ""
+      end
+    ' "$CACHE" 2>/dev/null)"
+    printf '%s\n' "- ${ISO_NOW} — ${TITLE} · ${ARTIST}${HIST_GENRE}" >> "$HISTORY"
     jq '.loggedToHistory = true' "$CACHE" | write_cache
   fi
 fi
