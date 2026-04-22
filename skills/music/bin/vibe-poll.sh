@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# vibe-poll.sh — core sensor for the attune skill.
+# vibe-poll.sh — core sensor for the music skill.
 # Reads MediaRemote, diffs against cache, fetches lyrics on song change,
 # rolls a "recent[10]" buffer, tracks pause-aware playback elapsed, and
 # appends to global play history once a song has been listened to for

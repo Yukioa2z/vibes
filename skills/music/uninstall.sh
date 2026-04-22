@@ -3,7 +3,7 @@
 #
 # Removes:
 #   - UserPromptSubmit hook entries pointing at this skill's vibe-hook.sh
-#   - ~/.claude/statuslines/attune.sh
+#   - ~/.claude/statuslines/music.sh
 #   - the play-history pointer line in ~/.claude/CLAUDE.md
 #
 # Preserves:
@@ -21,7 +21,7 @@ SUPPORT_DIR="$HOME/Library/Application Support/vibe"
 PLIST="$HOME/Library/LaunchAgents/supply.vibe.poll.plist"
 HOOK_MARK="$BIN_DIR/vibe-hook.sh"
 
-say() { printf '\033[36m[attune]\033[0m %s\n' "$*"; }
+say() { printf '\033[36m[music]\033[0m %s\n' "$*"; }
 
 # 1. Strip our hook entries.
 if [[ -f "$SETTINGS" ]]; then
@@ -41,9 +41,9 @@ if [[ -f "$SETTINGS" ]]; then
 fi
 
 # 2. Remove statusline option.
-if [[ -f "$STATUSLINES_DIR/attune.sh" ]]; then
-  say "removing $STATUSLINES_DIR/attune.sh"
-  rm -f "$STATUSLINES_DIR/attune.sh"
+if [[ -f "$STATUSLINES_DIR/music.sh" ]]; then
+  say "removing $STATUSLINES_DIR/music.sh"
+  rm -f "$STATUSLINES_DIR/music.sh"
 fi
 
 # 3. Remove CLAUDE.md pointer line.
