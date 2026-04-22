@@ -19,6 +19,29 @@ SEEK_JUMP_THRESHOLD=5  # seconds of player-elapsed disagreement → treat as see
 
 mkdir -p "$(dirname "$HISTORY")"
 
+# Ad detection. Most platform ads (Spotify Free, Apple Music free tier
+# preview, etc.) register through MediaRemote with brand names as both
+# title and artist, with empty artist, or with explicit ad copy in the
+# title. Filter these out so they don't pollute recent[] or history.
+is_ad() {
+  local t="${1:-}" a="${2:-}"
+  [[ -z "$t" || -z "$a" ]] && { echo true; return; }
+  local lt la
+  lt="$(printf '%s' "$t" | tr '[:upper:]' '[:lower:]' | xargs)"
+  la="$(printf '%s' "$a" | tr '[:upper:]' '[:lower:]' | xargs)"
+  # title and artist identical → brand-only entry
+  [[ "$lt" == "$la" ]] && { echo true; return; }
+  # explicit ad keywords in title
+  case "$lt" in
+    *advertisement*|*ad-free*|*"ads-free"*|*"ad free"*|"shop now"*|"get more"*|*"click here"*|*"save now"*|*"learn more"*|*"sign up"*|*"call now"*|*"book now"*|*"limited time"*) echo true; return ;;
+  esac
+  # known ad-platform "artists"
+  case "$la" in
+    spotify|topsify|"spotify – advertisement") echo true; return ;;
+  esac
+  echo false
+}
+
 # Pull six fields, one per line, in this exact order.
 RAW="$(nowplaying-cli get title artist album duration elapsedTime playbackRate 2>/dev/null || true)"
 TITLE="$(printf '%s\n' "$RAW" | sed -n '1p')"
@@ -69,22 +92,60 @@ write_cache() {
   mv -f "$tmp" "$CACHE"
 }
 
-# ── Lyrics fetch: lrclib first, NetEase public API as CJK fallback ──
+# ── Lyrics fetch: 3-tier search ──
+#   1) lrclib /get  — exact artist+track+album match (best when present)
+#   2) lrclib /search — fuzzy fallback when /get misses (album mismatch
+#      or punctuation drift); pick first result that has plainLyrics and
+#      whose artist contains ours.
+#   3) NetEase public API — CJK / non-Western fallback.
 fetch_lyrics4() {
-  # 1) lrclib (Western coverage)
-  local raw
+  # 1) lrclib /get (exact)
+  local raw plain
   raw="$(curl -fsS --max-time 2 -G "https://lrclib.net/api/get" \
     --data-urlencode "artist_name=$ARTIST" \
     --data-urlencode "track_name=$TITLE" \
     --data-urlencode "album_name=$ALBUM" 2>/dev/null || echo '{}')"
-  local plain
   plain="$(printf '%s' "$raw" | jq -r '.plainLyrics // ""' 2>/dev/null)"
   if [[ -n "$plain" ]]; then
     printf '%s' "$plain" | awk 'NF' | head -4 | jq -R . | jq -s .
     return
   fi
 
-  # 2) NetEase public API fallback (anonymous, no auth) for CJK coverage
+  # 2) lrclib /search (fuzzy: artist match AND normalized-title match)
+  local search_resp
+  search_resp="$(curl -fsS --max-time 3 -G "https://lrclib.net/api/search" \
+    --data-urlencode "q=$ARTIST $TITLE" 2>/dev/null || echo '[]')"
+  plain="$(printf '%s' "$search_resp" | python3 -c '
+import json, sys, re
+def norm(s):
+    if not s: return ""
+    s = s.lower()
+    s = re.sub(r"\(feat\.?[^)]*\)|\[feat\.?[^\]]*\]|\(remix\)|\(remastered\)", "", s)
+    s = re.sub(r"[^\w\s]", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+try:
+    arr = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+artist_n = norm(sys.argv[1])
+title_n  = norm(sys.argv[2])
+for r in arr:
+    a = norm(r.get("artistName"))
+    t = norm(r.get("trackName"))
+    pl = r.get("plainLyrics")
+    if not pl: continue
+    artist_match = artist_n in a or a in artist_n
+    title_match  = title_n in t or t in title_n
+    if artist_match and title_match:
+        print(pl)
+        sys.exit(0)
+' "$ARTIST" "$TITLE" 2>/dev/null)"
+  if [[ -n "$plain" ]]; then
+    printf '%s' "$plain" | awk 'NF' | head -4 | jq -R . | jq -s .
+    return
+  fi
+
+  # 3) NetEase public API fallback (anonymous, no auth) for CJK coverage
   local query="$ARTIST $TITLE"
   local search
   search="$(curl -fsS --max-time 3 -G "https://music.163.com/api/search/get" \
@@ -130,8 +191,9 @@ print(json.dumps(out, ensure_ascii=False))
 
 if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
   # ── New song ─────────────────────────────────────────────────────────
-  # Push previous track onto the front of the recent buffer (cap at RECENT_LIMIT).
-  if [[ -n "$PREV_TRACK_KEY" ]]; then
+  # Push previous track onto the front of the recent buffer (cap at
+  # RECENT_LIMIT) — but skip ads to keep drift signal clean.
+  if [[ -n "$PREV_TRACK_KEY" && "$(is_ad "$PREV_TITLE" "$PREV_ARTIST")" == "false" ]]; then
     NEW_RECENT="$(jq -c \
       --arg t "$PREV_TITLE" \
       --arg a "$PREV_ARTIST" \
@@ -215,8 +277,10 @@ else
      | .playbackRate = $playbackRate' \
     "$CACHE" | write_cache
 
-  # First crossing of the skip threshold (using actual played time, not wall time).
-  if [[ "$PREV_LOGGED" == "false" && "$NEW_PLAYED" -ge "$SKIP_THRESHOLD" ]]; then
+  # First crossing of the skip threshold (using actual played time, not
+  # wall time). Skip ads — they shouldn't pollute long-term history.
+  if [[ "$PREV_LOGGED" == "false" && "$NEW_PLAYED" -ge "$SKIP_THRESHOLD" \
+        && "$(is_ad "$TITLE" "$ARTIST")" == "false" ]]; then
     printf '%s\n' "- ${ISO_NOW} — ${TITLE} · ${ARTIST}" >> "$HISTORY"
     jq '.loggedToHistory = true' "$CACHE" | write_cache
   fi
