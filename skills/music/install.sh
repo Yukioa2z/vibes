@@ -65,8 +65,9 @@ fi
 
 # ── 4. install statusline vibe option ───────────────────────────────
 # music is a composing vibe: it runs the user's existing base vibe
-# (default "pomodoro") first, then appends the 🎧 line so context bar /
-# weather / etc. stay visible. Override base with VIBE_BASE env var.
+# (default "pomodoro") first, then appends the 🎧 segment SAME-LINE so
+# Claude Code's single-line statusline shows both base + music. Override
+# base with VIBE_BASE env var. Set VIBE_BASE=music to skip the base.
 say "installing statusline option at $STATUSLINES_DIR/music.sh"
 cat > "$STATUSLINES_DIR/music.sh" <<EOF
 #!/usr/bin/env bash
@@ -74,10 +75,21 @@ cat > "$STATUSLINES_DIR/music.sh" <<EOF
 input="\$(cat)"
 BASE="\${VIBE_BASE:-pomodoro}"
 BASE_SCRIPT="\$HOME/.claude/statuslines/\${BASE}.sh"
+SEP="  ·  "
+
+base_out=""
 if [[ -x "\$BASE_SCRIPT" && "\$BASE" != "music" ]]; then
-  printf '%s' "\$input" | bash "\$BASE_SCRIPT" || true
+  base_out="\$(printf '%s' "\$input" | bash "\$BASE_SCRIPT" 2>/dev/null | tr '\n' ' ' | sed 's/ *\$//')"
 fi
-printf '%s' "\$input" | bash "$BIN_DIR/music-statusline.sh" || true
+music_out="\$(printf '%s' "\$input" | bash "$BIN_DIR/music-statusline.sh" 2>/dev/null | tr '\n' ' ' | sed 's/ *\$//')"
+
+if [[ -n "\$base_out" && -n "\$music_out" ]]; then
+  printf '%s%s%s\n' "\$base_out" "\$SEP" "\$music_out"
+elif [[ -n "\$music_out" ]]; then
+  printf '%s\n' "\$music_out"
+elif [[ -n "\$base_out" ]]; then
+  printf '%s\n' "\$base_out"
+fi
 EOF
 chmod +x "$STATUSLINES_DIR/music.sh"
 
