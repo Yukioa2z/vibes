@@ -100,18 +100,36 @@ cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 # so we use one persistent process kept alive by launchd instead.
 # Each poll is hard-bounded so a hung curl or wedged nowplaying-cli
 # call can't pin the daemon and stale the cache.
+#
+# Prefers GNU timeout (gtimeout from coreutils, or 'timeout' on Linux),
+# but falls back to a pure-bash watchdog if neither is on PATH — macOS
+# ships without coreutils and we can't assume the user installed it,
+# and silent fallback to "no timeout at all" is what wedged previous
+# installs in the field.
 INTERVAL=2
 POLL_TIMEOUT=15
 POLL="$SUPPORT_DIR/poll.sh"
-TIMEOUT_BIN=""
-command -v gtimeout >/dev/null 2>&1 && TIMEOUT_BIN="gtimeout"
-[[ -z "\$TIMEOUT_BIN" ]] && command -v timeout >/dev/null 2>&1 && TIMEOUT_BIN="timeout"
-while true; do
-  if [[ -n "\$TIMEOUT_BIN" ]]; then
-    "\$TIMEOUT_BIN" "\$POLL_TIMEOUT" /bin/bash "\$POLL" 2>>/tmp/music-poll.err
-  else
-    /bin/bash "\$POLL" 2>>/tmp/music-poll.err
+
+run_poll() {
+  local bin=""
+  command -v gtimeout >/dev/null 2>&1 && bin="gtimeout"
+  [[ -z "\$bin" ]] && command -v timeout >/dev/null 2>&1 && bin="timeout"
+  if [[ -n "\$bin" ]]; then
+    "\$bin" "\$POLL_TIMEOUT" /bin/bash "\$POLL" 2>>/tmp/music-poll.err
+    return
   fi
+  # Pure-bash watchdog: background the poll, kill it after timeout.
+  /bin/bash "\$POLL" 2>>/tmp/music-poll.err &
+  local pid=\$!
+  ( sleep "\$POLL_TIMEOUT" && kill -9 "\$pid" 2>/dev/null ) &
+  local wd=\$!
+  wait "\$pid" 2>/dev/null
+  kill "\$wd" 2>/dev/null
+  wait "\$wd" 2>/dev/null
+}
+
+while true; do
+  run_poll
   sleep "\$INTERVAL"
 done
 EOF
