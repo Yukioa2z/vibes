@@ -59,7 +59,7 @@ else                               TIER=1
 fi
 
 # ── Per-feature flags (ground truth for any agent making decisions) ─
-FEAT_NOWPLAYING=$NOWPLAYING_OK   # title/artist/album, lyrics, cover, skip/repeat
+FEAT_NOWPLAYING=$NOWPLAYING_OK   # title/artist/album, cover, skip/repeat
 FEAT_LIKED_DETECT=false          # Liked status visible in <now-playing>
 FEAT_HISTORY_SYNC=false          # backfill / top-tracks / library cache
 FEAT_GENRES_SPOTIFY=false        # artist genres (richer than iTunes alone)
@@ -116,7 +116,7 @@ fi
 
 echo ""
 echo "Available features:"
-$FEAT_NOWPLAYING       && echo "  ✓ nowplaying       (title/artist/album, lyrics, cover, skip/repeat)" \
+$FEAT_NOWPLAYING       && echo "  ✓ nowplaying       (title/artist/album, cover, skip/repeat)" \
                        || echo "  ✗ nowplaying       (install: brew install nowplaying-cli)"
 $FEAT_LIKED_DETECT     && echo "  ✓ liked-detect     (❤ shown in <now-playing>)" \
                        || echo "  ✗ liked-detect     (run: music-spotify-setup.py <client_id>)"

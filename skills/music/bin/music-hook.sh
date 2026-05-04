@@ -42,10 +42,6 @@ TITLE="$(jq -r '.title // ""' "$CACHE")"
 
 ARTIST="$(jq -r '.artist // ""' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
-# Lyrics are still cached (so the assistant can produce them on
-# request via /tmp/music-current.json) but no longer injected every
-# turn — they were eating tokens and overshadowing the lighter
-# title/artist/genre signal.
 # Genre: prefer Spotify genres array, fall back to iTunes genre
 GENRE_LINE="$(jq -r '
   if (.genres // []) | length > 0
