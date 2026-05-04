@@ -101,11 +101,12 @@ cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 # Each poll is hard-bounded so a hung curl or wedged nowplaying-cli
 # call can't pin the daemon and stale the cache.
 #
-# Prefers GNU timeout (gtimeout from coreutils, or 'timeout' on Linux),
-# but falls back to a pure-bash watchdog if neither is on PATH — macOS
-# ships without coreutils and we can't assume the user installed it,
-# and silent fallback to "no timeout at all" is what wedged previous
-# installs in the field.
+# Prefers GNU timeout (gtimeout from coreutils, or 'timeout' on Linux);
+# falls back to a pure-bash watchdog when neither is on PATH (macOS
+# ships without coreutils). The fallback enables job control (set -m)
+# so the poll runs in its own process group, then sends SIGKILL to the
+# whole group — otherwise hung curl/nowplaying-cli children survive as
+# orphans and accumulate over time.
 INTERVAL=2
 POLL_TIMEOUT=15
 POLL="$SUPPORT_DIR/poll.sh"
@@ -115,17 +116,26 @@ run_poll() {
   command -v gtimeout >/dev/null 2>&1 && bin="gtimeout"
   [[ -z "\$bin" ]] && command -v timeout >/dev/null 2>&1 && bin="timeout"
   if [[ -n "\$bin" ]]; then
-    "\$bin" "\$POLL_TIMEOUT" /bin/bash "\$POLL" 2>>/tmp/music-poll.err
+    # -k 2: if SIGTERM doesn't take in 2s, follow with SIGKILL.
+    "\$bin" -k 2 "\$POLL_TIMEOUT" /bin/bash "\$POLL" 2>>/tmp/music-poll.err
     return
   fi
-  # Pure-bash watchdog: background the poll, kill it after timeout.
+  # Pure-bash fallback. set -m makes each backgrounded command a
+  # process group leader; "kill -- -PID" then signals the whole group.
+  set -m
   /bin/bash "\$POLL" 2>>/tmp/music-poll.err &
   local pid=\$!
-  ( sleep "\$POLL_TIMEOUT" && kill -9 "\$pid" 2>/dev/null ) &
+  (
+    sleep "\$POLL_TIMEOUT"
+    kill -TERM -- "-\$pid" 2>/dev/null
+    sleep 1
+    kill -KILL -- "-\$pid" 2>/dev/null
+  ) &
   local wd=\$!
   wait "\$pid" 2>/dev/null
-  kill "\$wd" 2>/dev/null
+  kill -KILL "\$wd" 2>/dev/null
   wait "\$wd" 2>/dev/null
+  set +m
 }
 
 while true; do
