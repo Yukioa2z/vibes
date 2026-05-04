@@ -15,32 +15,50 @@ CACHE="/tmp/music-current.json"
 COVER="/tmp/music-cover.jpg"
 HISTORY="$HOME/.cache/music/play_history.md"
 LOCK="/tmp/music-poll.lock"
+LOCK_PID="$LOCK/pid"
 SKIP_THRESHOLD=30
 RECENT_LIMIT=10
-LOCK_STALE_AFTER=10  # seconds before a held lock is treated as crashed
-                     # (daemon polls every 2s and a healthy poll
-                     # finishes in <1s, so 10s already means "stuck")
+LOCK_STALE_AFTER=30  # seconds; backstop for the rare case where a poll
+                     # owner is alive but truly hung (we'd rather steal
+                     # the lock than block forever)
 
-# ── Atomic single-writer lock (mkdir is POSIX-atomic) ────────────────
-# The launchd daemon runs every 2s; the prompt hook may also call us as
-# a safety refresh; the statusline used to. Without a lock, two pollers
+# ── Single-writer lock (mkdir is POSIX-atomic) ───────────────────────
+# The launchd daemon runs every 2s; the prompt hook may call us as a
+# safety refresh; the statusline used to. Without a lock, two pollers
 # can both cross the SKIP_THRESHOLD between read and write and append
-# the same history line. mkdir guarantees only one process succeeds.
-if ! mkdir "$LOCK" 2>/dev/null; then
-  # Reclaim a stale lock from a crashed previous run.
-  if [[ -d "$LOCK" ]]; then
-    LOCK_AGE=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
-    if (( LOCK_AGE > LOCK_STALE_AFTER )); then
-      rmdir "$LOCK" 2>/dev/null
-      mkdir "$LOCK" 2>/dev/null || exit 0
-    else
-      exit 0
-    fi
-  else
-    exit 0
+# the same history line.
+#
+# Lock is `mkdir $LOCK` plus a `pid` file inside. SIGKILL doesn't fire
+# the EXIT trap, so on watchdog kill the lock dir survives — the next
+# poll detects this by checking whether the recorded PID is still
+# alive (kill -0). If not, the lock is reclaimed immediately rather
+# than blocking until LOCK_STALE_AFTER seconds elapse.
+try_acquire_lock() {
+  if mkdir "$LOCK" 2>/dev/null; then
+    echo $$ > "$LOCK_PID"
+    return 0
   fi
-fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM HUP
+  # Lock contended. Inspect the holder.
+  local owner age
+  owner="$(cat "$LOCK_PID" 2>/dev/null || echo "")"
+  age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+  if [[ -z "$owner" ]] || ! kill -0 "$owner" 2>/dev/null; then
+    # Owner missing or dead → leaked lock, steal it.
+    rm -rf "$LOCK" 2>/dev/null
+  elif (( age > LOCK_STALE_AFTER )); then
+    # Owner alive but holding too long → assume hung, steal it.
+    rm -rf "$LOCK" 2>/dev/null
+  else
+    return 1  # active healthy owner; back off
+  fi
+  if mkdir "$LOCK" 2>/dev/null; then
+    echo $$ > "$LOCK_PID"
+    return 0
+  fi
+  return 1
+}
+try_acquire_lock || exit 0
+trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM HUP
 
 mkdir -p "$(dirname "$HISTORY")"
 
