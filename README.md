@@ -24,7 +24,8 @@ The installer:
 2. Appends a `UserPromptSubmit` hook to `~/.claude/settings.json` (existing hooks are preserved)
 3. Adds a `music` statusline option at `~/.claude/statuslines/music.sh` that composes with your existing base vibe
 4. Installs a `launchd KeepAlive` daemon at `~/Library/LaunchAgents/supply.music.poll.plist` that polls every 2s
-5. Adds a play-history pointer to `~/.claude/CLAUDE.md` so the log is discoverable from any cwd
+5. Symlinks slash commands (currently `/vibe`) from `skills/music/commands/*.md` into `~/.claude/commands/`
+6. Adds a play-history pointer to `~/.claude/CLAUDE.md` so the log is discoverable from any cwd
 
 After install, the hook is active in any **new** Claude Code session.
 
@@ -36,7 +37,15 @@ To make `🎧` your default statusline, edit `~/.claude/statusline-command.sh` a
 npx vibing-supply uninstall
 ```
 
-Removes the hook, statusline option, daemon, and CLAUDE.md pointer. Leaves `~/.cache/music/play_history.md` intact.
+Removes the hook, statusline option, daemon, slash command symlinks, and CLAUDE.md pointer. Leaves `~/.cache/music/play_history.md` intact.
+
+## Slash commands
+
+| Command | Effect |
+|---|---|
+| `/vibe claude` | Opens [Claude FM](https://www.youtube.com/watch?v=AUQKjgKQF7w) — a 24/7 live coding stream — in your default browser |
+
+More to come. Drop new `*.md` files into `skills/music/commands/` and re-run install; they'll be symlinked into `~/.claude/commands/`.
 
 ## What gets injected
 

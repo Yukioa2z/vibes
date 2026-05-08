@@ -14,8 +14,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$REPO_DIR/bin"
+COMMANDS_DIR="$REPO_DIR/commands"
 SETTINGS="$HOME/.claude/settings.json"
 STATUSLINES_DIR="$HOME/.claude/statuslines"
+COMMANDS_USER_DIR="$HOME/.claude/commands"
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 SUPPORT_DIR="$HOME/Library/Application Support/music"
 PLIST="$HOME/Library/LaunchAgents/supply.music.poll.plist"
@@ -54,14 +56,28 @@ if [[ -f "$CLAUDE_MD" ]] && grep -qF "music/play_history.md" "$CLAUDE_MD"; then
   mv -f "$tmp" "$CLAUDE_MD"
 fi
 
-# 4. Stop and remove the launchd polling daemon.
+# 4. Strip slash command symlinks we own. Only remove links that
+#    actually point back into this repo's commands/ dir — leaves user's
+#    own files or third-party command files untouched.
+if [[ -d "$COMMANDS_DIR" && -d "$COMMANDS_USER_DIR" ]]; then
+  while IFS= read -r -d '' cmd_file; do
+    base="$(basename "$cmd_file")"
+    target="$COMMANDS_USER_DIR/$base"
+    if [[ -L "$target" && "$(readlink "$target")" == "$cmd_file" ]]; then
+      say "removing $target"
+      rm -f "$target"
+    fi
+  done < <(find "$COMMANDS_DIR" -maxdepth 1 -type f -name '*.md' -print0)
+fi
+
+# 5. Stop and remove the launchd polling daemon.
 if [[ -f "$PLIST" ]]; then
   say "unloading background poll daemon"
   launchctl unload "$PLIST" 2>/dev/null || true
   rm -f "$PLIST"
 fi
 
-# 5. Remove the launchd-friendly script copies (Application Support).
+# 6. Remove the launchd-friendly script copies (Application Support).
 if [[ -d "$SUPPORT_DIR" ]]; then
   say "removing $SUPPORT_DIR"
   rm -f "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/daemon.sh" \

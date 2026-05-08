@@ -12,8 +12,10 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BIN_DIR="$REPO_DIR/bin"
+COMMANDS_DIR="$REPO_DIR/commands"
 SETTINGS="$HOME/.claude/settings.json"
 STATUSLINES_DIR="$HOME/.claude/statuslines"
+COMMANDS_USER_DIR="$HOME/.claude/commands"
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 HISTORY_DIR="$HOME/.cache/music"
 SUPPORT_DIR="$HOME/Library/Application Support/music"
@@ -34,7 +36,7 @@ for bin in nowplaying-cli jq curl python3; do
 done
 
 # ── 2. ensure dirs ──────────────────────────────────────────────────
-mkdir -p "$STATUSLINES_DIR" "$HISTORY_DIR" "$(dirname "$SETTINGS")" "$SUPPORT_DIR" "$(dirname "$PLIST")"
+mkdir -p "$STATUSLINES_DIR" "$HISTORY_DIR" "$(dirname "$SETTINGS")" "$SUPPORT_DIR" "$(dirname "$PLIST")" "$COMMANDS_USER_DIR"
 
 # ── 3. patch settings.json (append hook, don't clobber) ─────────────
 say "registering UserPromptSubmit hook"
@@ -179,7 +181,36 @@ launchctl unload "$PLIST" 2>/dev/null || true
 launchctl load "$PLIST"
 say "  daemon loaded ($PLIST_LABEL)"
 
-# ── 6. CLAUDE.md pointer (idempotent) ───────────────────────────────
+# ── 6. slash commands: symlink skills/music/commands/*.md into
+#       ~/.claude/commands/ so users can invoke /vibe etc. directly.
+#       Symlink (not copy) so repo edits pick up immediately and users
+#       can't end up with stale copies after a git pull.
+say "installing slash commands into $COMMANDS_USER_DIR"
+if [[ -d "$COMMANDS_DIR" ]]; then
+  while IFS= read -r -d '' cmd_file; do
+    base="$(basename "$cmd_file")"
+    target="$COMMANDS_USER_DIR/$base"
+    if [[ -L "$target" ]]; then
+      # Our symlink (or someone else's) — overwrite ours only.
+      existing="$(readlink "$target")"
+      if [[ "$existing" == "$cmd_file" ]]; then
+        say "  /${base%.md} already linked — skipping"
+        continue
+      fi
+      rm -f "$target"
+      ln -s "$cmd_file" "$target"
+      say "  /${base%.md} relinked"
+    elif [[ -e "$target" ]]; then
+      # Real file — user has a same-named command. Don't clobber.
+      say "  /${base%.md} exists as a regular file — skipping to avoid clobber"
+    else
+      ln -s "$cmd_file" "$target"
+      say "  /${base%.md} linked"
+    fi
+  done < <(find "$COMMANDS_DIR" -maxdepth 1 -type f -name '*.md' -print0)
+fi
+
+# ── 7. CLAUDE.md pointer (idempotent) ───────────────────────────────
 say "ensuring play-history pointer in $CLAUDE_MD"
 touch "$CLAUDE_MD"
 if grep -qF "music/play_history.md" "$CLAUDE_MD"; then
