@@ -88,14 +88,20 @@ is_ad() {
   echo false
 }
 
-# Pull six fields, one per line, in this exact order.
-RAW="$(nowplaying-cli get title artist album duration elapsedTime playbackRate 2>/dev/null || true)"
+# Pull seven fields, one per line, in this exact order.
+# clientBundleIdentifier tells us which app owns the current MediaRemote
+# session (com.spotify.client, com.google.Chrome, com.apple.Safari, …).
+# We bake it into the cache so downstream scripts can gate source-specific
+# enrichment (e.g. Spotify Web API state only when Spotify is the source).
+RAW="$(nowplaying-cli get title artist album duration elapsedTime playbackRate clientBundleIdentifier 2>/dev/null || true)"
 TITLE="$(printf '%s\n' "$RAW" | sed -n '1p')"
 ARTIST="$(printf '%s\n' "$RAW" | sed -n '2p')"
 ALBUM="$(printf '%s\n' "$RAW" | sed -n '3p')"
 DURATION_RAW="$(printf '%s\n' "$RAW" | sed -n '4p')"
 ELAPSED_RAW="$(printf '%s\n' "$RAW" | sed -n '5p')"
 RATE_RAW="$(printf '%s\n' "$RAW" | sed -n '6p')"
+BUNDLE_ID="$(printf '%s\n' "$RAW" | sed -n '7p')"
+[[ "$BUNDLE_ID" == "null" ]] && BUNDLE_ID=""
 
 # Coerce numeric fields safely. nowplaying-cli prints empty/null for missing.
 to_num() {
@@ -189,9 +195,13 @@ except Exception:
   [[ -z "$ENRICH_JSON" ]] && ENRICH_JSON='{}'
 
   # Live Spotify player state: shuffle/repeat/context/device + Liked.
-  # Returns {} when nothing-Spotify is playing (e.g. Apple Music) so it's
-  # safe to call unconditionally — merge becomes a no-op in that case.
-  SPOTIFY_JSON="$(bash "$SCRIPT_DIR/music-player-state.sh" 2>/dev/null || echo '{}')"
+  # Returns {} when nothing-Spotify is playing (e.g. Apple Music, browser
+  # tab via Media Session) so it's safe to call unconditionally — merge
+  # becomes a no-op in that case. We pass the MediaRemote bundle id so
+  # the state script can short-circuit: /me/player returns Spotify's last
+  # server-side session even after the user swaps to YouTube, leaking a
+  # stale liked/context/shuffle onto a totally different track.
+  SPOTIFY_JSON="$(MUSIC_SOURCE_BUNDLE_ID="$BUNDLE_ID" MUSIC_CURRENT_TITLE="$TITLE" MUSIC_CURRENT_ARTIST="$ARTIST" bash "$SCRIPT_DIR/music-player-state.sh" 2>/dev/null || echo '{}')"
   [[ -z "$SPOTIFY_JSON" ]] && SPOTIFY_JSON='{}'
 
   # Played time starts at 0: even if the player begins mid-track (e.g.
@@ -214,13 +224,15 @@ except Exception:
     --argjson enrich "$ENRICH_JSON" \
     --argjson spotify "$SPOTIFY_JSON" \
     --arg startedAt "$ISO_NOW" \
+    --arg bundleId "$BUNDLE_ID" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
       duration:$duration, initialElapsed:$initialElapsed,
       playbackElapsed:$playbackElapsed, playbackPosition:$playbackPosition,
       lastTickAt:$lastTickAt, firstSeenAtUnix:$firstSeenAtUnix,
       playbackRate:$playbackRate, recent:$recent,
       coverAvailable:$coverAvailable, coverShownToHook:false,
-      startedAt:$startedAt, loggedToHistory:false}
+      startedAt:$startedAt, loggedToHistory:false,
+      source:{bundleId:$bundleId}}
       + $enrich + $spotify' | write_cache
 
   # ── Behavioral signals ─────────────────────────────────────────────

@@ -24,6 +24,17 @@ LIKED_CACHE="$HOME/.cache/music/liked_tracks.json"
 
 emit_empty() { printf '%s\n' '{}'; exit 0; }
 
+# Source gate: /me/player reflects Spotify's last server-side session,
+# which persists after the user swaps to a non-Spotify player (YouTube
+# in a browser, Apple Music, etc.). Without this check, shuffle/repeat/
+# context/liked from a stale Spotify session leak into a now-playing
+# block that is actually showing a YouTube track. Bail early whenever
+# MediaRemote tells us the current source isn't the Spotify desktop app.
+SRC_BUNDLE="${MUSIC_SOURCE_BUNDLE_ID:-}"
+if [[ -n "$SRC_BUNDLE" && "$SRC_BUNDLE" != "com.spotify.client" ]]; then
+  emit_empty
+fi
+
 token="$(spotify_get_token)" || emit_empty
 
 # /me/player returns 204 (empty body) when no Spotify session is active.
@@ -37,6 +48,41 @@ body="$(curl --noproxy '*' -fsS --max-time 4 \
 PLAYER="$(cat /tmp/music-player.body 2>/dev/null)"
 rm -f /tmp/music-player.body
 [[ -z "$PLAYER" ]] && emit_empty
+
+# Second-layer check: even when Spotify is the focused MediaRemote
+# source, the server-side /me/player can lag or report a different
+# track than MediaRemote (e.g. Spotify paused + another Spotify client
+# resumed on a different device right before we swapped apps). If the
+# reported Spotify track name / artist disagrees with what we're about
+# to display, assume the Web API view is stale and bail.
+api_title="$(printf '%s' "$PLAYER" | jq -r '.item.name // ""')"
+api_artist="$(printf '%s' "$PLAYER" | jq -r '[.item.artists // [] | .[].name] | join(", ")')"
+mr_title="${MUSIC_CURRENT_TITLE:-}"
+mr_artist="${MUSIC_CURRENT_ARTIST:-}"
+if [[ -n "$mr_title" && -n "$api_title" ]]; then
+  # Lowercase compare to dodge casing drift.
+  lc() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+  if [[ "$(lc "$api_title")" != "$(lc "$mr_title")" ]]; then
+    emit_empty
+  fi
+  # Artist is optional on the MR side (some YouTube tabs emit empty
+  # artist and a bundle we don't gate on); only enforce when both sides
+  # have something.
+  if [[ -n "$mr_artist" && -n "$api_artist" \
+        && "$(lc "$api_artist")" != "$(lc "$mr_artist")" ]]; then
+    # Weak mismatch (e.g. "U137" vs "U137, Hollow Coves") — allow if one
+    # contains the other; otherwise bail.
+    case "$(lc "$api_artist")" in
+      *"$(lc "$mr_artist")"*) : ;;
+      *)
+        case "$(lc "$mr_artist")" in
+          *"$(lc "$api_artist")"*) : ;;
+          *) emit_empty ;;
+        esac
+        ;;
+    esac
+  fi
+fi
 
 # Extract just what we'll bake into the cache.
 parsed="$(printf '%s' "$PLAYER" | jq -c '{
