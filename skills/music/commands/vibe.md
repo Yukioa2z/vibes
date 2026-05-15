@@ -16,13 +16,13 @@ commentary. One line of confirmation is enough.
 Open Claude FM (a 24/7 live coding stream) in the default browser:
 
 ```bash
-open "https://www.youtube.com/watch?v=AUQKjgKQF7w"
+open "https://www.youtube.com/live/YmQ7jRgf4f0"
 ```
 
 Then reply with exactly:
 
 ```
-🎙️ Claude FM → https://www.youtube.com/watch?v=AUQKjgKQF7w
+🎙️ Claude FM → https://www.youtube.com/live/YmQ7jRgf4f0
 ```
 
 ### (unknown / empty)

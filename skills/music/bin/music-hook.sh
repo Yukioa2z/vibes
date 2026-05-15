@@ -42,6 +42,16 @@ TITLE="$(jq -r '.title // ""' "$CACHE")"
 
 ARTIST="$(jq -r '.artist // ""' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
+
+# Ghost-media filter. MediaRemote latches onto whatever was the most
+# recent media source — a browser tab with a paused video can sit as
+# "current" for hours after the user moved on. firstSeenAtUnix only
+# resets on track change, so a long-paused track has a stale value.
+# Threshold: 5 min paused without a track change = treat as no music.
+FIRST_SEEN="$(jq -r '.firstSeenAtUnix // 0' "$CACHE" 2>/dev/null || echo 0)"
+if [[ "$RATE" == "0" ]] && (( $(date +%s) - FIRST_SEEN > 300 )); then
+  emit_empty
+fi
 # Genre: prefer Spotify genres array, fall back to iTunes genre
 GENRE_LINE="$(jq -r '
   if (.genres // []) | length > 0

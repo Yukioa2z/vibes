@@ -34,8 +34,15 @@ DURATION="$(jq -r '.duration // 0' "$CACHE")"
 POSITION="$(jq -r '.playbackPosition // .playbackElapsed // .initialElapsed // 0' "$CACHE")"
 LAST_TICK="$(jq -r '.lastTickAt // .firstSeenAtUnix // 0' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
+FIRST_SEEN="$(jq -r '.firstSeenAtUnix // 0' "$CACHE")"
 
 if [[ "$RATE" == "0" ]]; then
+  # Ghost-media filter: MediaRemote keeps reporting a paused browser
+  # tab / old player as "current" indefinitely. If the same track has
+  # been paused for >5 min without changing, hide it.
+  if (( $(date +%s) - FIRST_SEEN > 300 )); then
+    exit 0
+  fi
   printf '🎧 %s (paused)\n' "$TITLE_DISPLAY"
   exit 0
 fi
