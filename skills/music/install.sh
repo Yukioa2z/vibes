@@ -24,7 +24,7 @@ PLIST_LABEL="supply.music.poll"
 
 HOOK_CMD="bash \"$BIN_DIR/music-hook.sh\""
 HOOK_MARK="$BIN_DIR/music-hook.sh"
-CLAUDE_MD_LINE='- Music play history at `~/.cache/music/play_history.md` (managed by music skill); read when user asks about listening patterns or vibe drift.'
+CLAUDE_MD_LINE='- Music context (managed by music skill, not auto-injected): current track snapshot at `~/.cache/music/now-playing.txt`, full listening log at `~/.cache/music/play_history.md`. Read when the user asks about what they are listening to, when matching tone to current music makes sense, or when they ask about listening patterns / vibe drift.'
 
 say() { printf '\033[36m[music]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[music]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -211,11 +211,22 @@ if [[ -d "$COMMANDS_DIR" ]]; then
 fi
 
 # ── 7. CLAUDE.md pointer (idempotent) ───────────────────────────────
-say "ensuring play-history pointer in $CLAUDE_MD"
+# The pointer tells Claude where the snapshot + history files live so
+# they're discoverable from any cwd (we no longer auto-inject context).
+# If an older version of this skill left a pointer in CLAUDE.md, strip
+# it before appending the canonical one.
+say "ensuring music pointer in $CLAUDE_MD"
 touch "$CLAUDE_MD"
-if grep -qF "music/play_history.md" "$CLAUDE_MD"; then
+if grep -qF "music/now-playing.txt" "$CLAUDE_MD"; then
   say "  pointer already present — skipping"
 else
+  if grep -qF "music/play_history.md" "$CLAUDE_MD"; then
+    # Older single-line pointer present — remove it, we'll append the new one.
+    tmp="$(mktemp)"
+    grep -vF "music/play_history.md" "$CLAUDE_MD" > "$tmp" || true
+    mv -f "$tmp" "$CLAUDE_MD"
+    say "  upgraded older pointer"
+  fi
   printf '\n%s\n' "$CLAUDE_MD_LINE" >> "$CLAUDE_MD"
   say "  appended"
 fi

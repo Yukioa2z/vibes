@@ -1,6 +1,6 @@
 ---
 name: music
-description: Make Claude session-aware of the music the user is currently listening to. Reads now-playing metadata, genre, cover art, and listening behavior from macOS MediaRemote and Spotify, injects them as context every turn. Also lets Claude control playback (play/pause/skip/volume/queue/save) when the user asks. Use this skill when the user wants Claude's tone to follow their music, when they ask "what am I listening to", to control Spotify, or to install / uninstall / explain the music mechanism.
+description: Make Claude session-aware of the music the user is currently listening to. Reads now-playing metadata, genre, cover art, and listening behavior from macOS MediaRemote and Spotify and writes a fresh snapshot to `~/.cache/music/now-playing.txt` on every turn — Claude reads it on demand instead of having it injected into every prompt. Also lets Claude control playback (play/pause/skip/volume/queue/save) when the user asks. Use this skill when the user wants Claude's tone to follow their music, when they ask "what am I listening to", to control Spotify, or to install / uninstall / explain the music mechanism.
 ---
 
 # Music — Session-Aware Listening Context
@@ -13,8 +13,8 @@ The skill works at three levels; everything past tier 0 is opt-in.
 
 | Tier | Setup | What works |
 |---|---|---|
-| **0 (default)** | `install.sh` only | nowplaying-cli sensor: title/artist/album, cover art, iTunes genre, skip/repeat detection, `<now-playing>` injection, statusline, history file |
-| **1 (Spotify Free)** | + register Spotify app + `music-spotify-setup.py <client_id>` | tier 0 + Liked detection in `<now-playing>`, recently-played backfill, top tracks/artists, finer-grained Spotify genres, live shuffle/repeat/context/device state |
+| **0 (default)** | `install.sh` only | nowplaying-cli sensor: title/artist/album, cover art, iTunes genre, skip/repeat detection, on-demand `<now-playing>` snapshot file, statusline, history file |
+| **1 (Spotify Free)** | + register Spotify app + `music-spotify-setup.py <client_id>` | tier 0 + Liked detection in the snapshot, recently-played backfill, top tracks/artists, finer-grained Spotify genres, live shuffle/repeat/context/device state |
 | **2 (Spotify Premium)** | tier 1 with a Premium account | tier 1 + playback control via `music-control.sh` (play/pause/skip/save/queue/transfer/etc.) |
 
 **Run `bash bin/music-capabilities.sh`** any time to detect what tier this install is on and what features are enabled. Snapshot lands at `~/.cache/music/capabilities.json` for other scripts (and Claude) to read.
@@ -36,11 +36,11 @@ When suggesting a Spotify-tier feature to the user, check capabilities first ins
   - `music-control.sh save` / `unsave` append `> liked X · Y` event lines.
   - Claude appends `> note: ...` lines at meaningful milestones (push, PR, deploy, decision).
 - Renders an optional statusline row: `🎧 <title>  -<remaining>`, appended below your existing statusline content.
-- On every `UserPromptSubmit`, injects a `<now-playing>` block: track + genre + Liked + listening behavior + Spotify context (if any) + recent drift with skip markers.
+- On every `UserPromptSubmit`, regenerates a `<now-playing>` block (track + genre + Liked + listening behavior + Spotify context if any + recent drift with skip markers) and writes it to `~/.cache/music/now-playing.txt`. The hook itself returns an empty response — nothing is injected into the prompt. Claude reads the snapshot on demand when music is relevant to the task.
 
-## The `<now-playing>` block
+## The `<now-playing>` snapshot
 
-This is the music playing in the room right now. Don't quote it back verbatim. Match tone and pacing — but suppress entirely for transactional/debugging work.
+The hook keeps `~/.cache/music/now-playing.txt` fresh on every turn but does NOT inject it. When the user asks "what am I listening to", wants tone matched to their music, or the conversation suggests vibe context might help, `Read` the snapshot. It's a small file with a single `<now-playing>...</now-playing>` block. Don't quote it back verbatim. Match tone and pacing — but suppress entirely for transactional/debugging work.
 
 After a meaningful milestone (push, PR, deploy, major decision), append a one-line `> note: ...` to `~/.cache/music/play_history.md` — what happened, not what's playing. Keep it short.
 
@@ -136,7 +136,7 @@ Free accounts → tier 1 (read-only Spotify enrichment). Premium → tier 2 (add
 | `bin/music-enrich.sh` | Genre enrichment: iTunes Search API + Spotify API. |
 | `bin/music-spotify-auth.sh` | Sourced helper: token management with auto-refresh. |
 | `bin/music-player-state.sh` | One-shot Spotify state pull (shuffle/repeat/context/device + Liked). |
-| `bin/music-hook.sh` | UserPromptSubmit hook; reads cache, outputs `<now-playing>` block. |
+| `bin/music-hook.sh` | UserPromptSubmit hook; reads cache, writes `<now-playing>` block to `~/.cache/music/now-playing.txt`. Returns empty — never injects into prompt. |
 | `bin/music-statusline.sh` | Statusline renderer: `🎧 <title>  -<remaining>`. |
 | `bin/music-control.sh` | Playback control via Spotify Web API. |
 | `bin/music-history-sync.sh` | Pull taste / backfill / library from Spotify. |
@@ -144,6 +144,7 @@ Free accounts → tier 1 (read-only Spotify enrichment). Premium → tier 2 (add
 | `bin/music-capabilities.sh` | Probe install + Spotify account → derive tier (0/1/2) and per-feature flags. |
 | `install.sh` / `uninstall.sh` | Idempotent setup / teardown. |
 | `/tmp/music-current.json` | Ephemeral cache (real-time state + behavior + Spotify state). |
+| `~/.cache/music/now-playing.txt` | Latest `<now-playing>` snapshot, refreshed on every UserPromptSubmit. Read this on demand. |
 | `~/.cache/music/play_history.md` | Persistent listening log (Taste / Backfill / Live sections). |
 | `~/.cache/music/liked_tracks.json` | Local snapshot of Spotify Liked Songs for poll lookup. |
 | `~/.config/music/spotify.json` | Spotify tokens (created by setup script). |

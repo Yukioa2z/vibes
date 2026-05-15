@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # music-hook.sh — Claude Code UserPromptSubmit hook.
-# Reads the current music cache and outputs a JSON envelope whose
-# additionalContext field carries a <now-playing> block that future
-# turns of the assistant will see in their input.
+#
+# Generates a <now-playing> snapshot from the current music cache and
+# writes it to ~/.cache/music/now-playing.txt. Returns an empty hook
+# response so NOTHING is injected into the user prompt — Claude can
+# read the file on demand when music is relevant to the task.
 #
 # Pure read by default; if the cache is stale (>10s since last sample)
 # it pings music-poll.sh as a safety refresh.
@@ -10,6 +12,8 @@
 set -uo pipefail
 
 CACHE="/tmp/music-current.json"
+SNAPSHOT_DIR="$HOME/.cache/music"
+SNAPSHOT="$SNAPSHOT_DIR/now-playing.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 POLL="$SCRIPT_DIR/music-poll.sh"
 STALE_AFTER=10  # seconds
@@ -17,10 +21,16 @@ STALE_AFTER=10  # seconds
 # Drain stdin (Claude Code sends UserPromptSubmit JSON we don't need).
 cat >/dev/null
 
+mkdir -p "$SNAPSHOT_DIR"
+
 emit_empty() {
-  # No music context this turn; return nothing so the prompt is unchanged.
+  # Hook always returns {} — we never inject into the prompt.
   printf '{}\n'
   exit 0
+}
+
+clear_snapshot() {
+  : > "$SNAPSHOT" 2>/dev/null || true
 }
 
 # Safety refresh if cache is missing or stale.
@@ -34,11 +44,17 @@ elif command -v jq >/dev/null 2>&1; then
   fi
 fi
 
-[[ -f "$CACHE" ]] || emit_empty
+if [[ ! -f "$CACHE" ]]; then
+  clear_snapshot
+  emit_empty
+fi
 
 # Pull fields. Missing/empty title means "nothing has played yet".
 TITLE="$(jq -r '.title // ""' "$CACHE")"
-[[ -z "$TITLE" ]] && emit_empty
+if [[ -z "$TITLE" ]]; then
+  clear_snapshot
+  emit_empty
+fi
 
 ARTIST="$(jq -r '.artist // ""' "$CACHE")"
 RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
@@ -50,6 +66,7 @@ RATE="$(jq -r '.playbackRate // 0' "$CACHE")"
 # Threshold: 5 min paused without a track change = treat as no music.
 FIRST_SEEN="$(jq -r '.firstSeenAtUnix // 0' "$CACHE" 2>/dev/null || echo 0)"
 if [[ "$RATE" == "0" ]] && (( $(date +%s) - FIRST_SEEN > 300 )); then
+  clear_snapshot
   emit_empty
 fi
 # Genre: prefer Spotify genres array, fall back to iTunes genre
@@ -89,6 +106,7 @@ fi
 
 # Build the block. Compact: header line + drift line.
 # Header: "Title" — Artist · Genre [(paused)] [· mode-tag]
+TMP="$(mktemp)"
 {
   printf '<now-playing>\n'
   HEADER="\"$TITLE\" — $ARTIST"
@@ -121,14 +139,9 @@ fi
     printf 'Drift: %s\n' "$DRIFT_INLINE"
   fi
   printf '</now-playing>\n'
-} > /tmp/music-hook-block.$$
+} > "$TMP"
 
-CONTEXT="$(cat /tmp/music-hook-block.$$)"
-rm -f /tmp/music-hook-block.$$
+mv -f "$TMP" "$SNAPSHOT"
 
-jq -n --arg ctx "$CONTEXT" '{
-  hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
-    additionalContext: $ctx
-  }
-}'
+# Always return empty — we never inject into the user prompt.
+emit_empty

@@ -48,11 +48,12 @@ if [[ -f "$STATUSLINES_DIR/music.sh" ]]; then
   rm -f "$STATUSLINES_DIR/music.sh"
 fi
 
-# 3. Remove CLAUDE.md pointer line.
-if [[ -f "$CLAUDE_MD" ]] && grep -qF "music/play_history.md" "$CLAUDE_MD"; then
-  say "stripping play-history pointer from $CLAUDE_MD"
+# 3. Remove CLAUDE.md pointer line(s) — match either the old play_history-only
+#    pointer or the newer combined pointer that mentions now-playing.txt.
+if [[ -f "$CLAUDE_MD" ]] && grep -qE "music/(now-playing\.txt|play_history\.md)" "$CLAUDE_MD"; then
+  say "stripping music pointer from $CLAUDE_MD"
   tmp="$(mktemp)"
-  grep -vF "music/play_history.md" "$CLAUDE_MD" > "$tmp" || true
+  grep -vE "music/(now-playing\.txt|play_history\.md)" "$CLAUDE_MD" > "$tmp" || true
   mv -f "$tmp" "$CLAUDE_MD"
 fi
 
