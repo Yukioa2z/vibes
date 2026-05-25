@@ -34,14 +34,29 @@ LOCK_STALE_AFTER=30  # seconds; backstop for the rare case where a poll
 # alive (kill -0). If not, the lock is reclaimed immediately rather
 # than blocking until LOCK_STALE_AFTER seconds elapse.
 try_acquire_lock() {
+  # Stage the pid file outside the lock first, then `mv` it in after
+  # `mkdir` succeeds. Without this, there's a window between mkdir and
+  # `echo $$ >` where a contending poll sees an empty pid file and
+  # races to steal a freshly-acquired (still healthy) lock.
+  local tmp_pid="${LOCK}.pid.$$"
+  echo $$ > "$tmp_pid" 2>/dev/null || return 1
   if mkdir "$LOCK" 2>/dev/null; then
-    echo $$ > "$LOCK_PID"
+    mv -f "$tmp_pid" "$LOCK_PID" 2>/dev/null
     return 0
   fi
+  rm -f "$tmp_pid" 2>/dev/null
   # Lock contended. Inspect the holder.
   local owner age
   owner="$(cat "$LOCK_PID" 2>/dev/null || echo "")"
   age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+  if [[ -z "$owner" ]]; then
+    # Empty pid could mean (a) leaked lock from a SIGKILL'd owner, or
+    # (b) a contender that *just* won mkdir and hasn't moved its pid
+    # in yet. Re-read after a short grace; if still empty, treat as
+    # leaked.
+    sleep 0.2
+    owner="$(cat "$LOCK_PID" 2>/dev/null || echo "")"
+  fi
   if [[ -z "$owner" ]] || ! kill -0 "$owner" 2>/dev/null; then
     # Owner missing or dead → leaked lock, steal it.
     rm -rf "$LOCK" 2>/dev/null
@@ -51,10 +66,12 @@ try_acquire_lock() {
   else
     return 1  # active healthy owner; back off
   fi
+  echo $$ > "$tmp_pid" 2>/dev/null || return 1
   if mkdir "$LOCK" 2>/dev/null; then
-    echo $$ > "$LOCK_PID"
+    mv -f "$tmp_pid" "$LOCK_PID" 2>/dev/null
     return 0
   fi
+  rm -f "$tmp_pid" 2>/dev/null
   return 1
 }
 try_acquire_lock || exit 0
