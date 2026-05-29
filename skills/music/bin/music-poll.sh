@@ -98,9 +98,11 @@ is_ad() {
   case "$lt" in
     *advertisement*|*ad-free*|*"ads-free"*|*"ad free"*|"shop now"*|"get more"*|*"click here"*|*"save now"*|*"learn more"*|*"sign up"*|*"call now"*|*"book now"*|*"limited time"*) echo true; return ;;
   esac
-  # known ad-platform "artists"
+  # known ad-platform / non-music "artists". openai = the ChatGPT site's
+  # 30s media element MediaRemote misreports as a track (artist=OpenAI);
+  # real podcasts about OpenAI carry the show name as artist, so they pass.
   case "$la" in
-    spotify|topsify|"spotify – advertisement") echo true; return ;;
+    spotify|topsify|"spotify – advertisement"|openai) echo true; return ;;
   esac
   echo false
 }
