@@ -146,7 +146,7 @@ PREV_RECENT="[]"
 PREV_PLAYED=0
 PREV_POSITION=0
 PREV_TICK_AT="$NOW"
-if [[ -f "$CACHE" ]]; then
+if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
   PREV_TRACK_KEY="$(jq -r '.trackKey // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_LOGGED="$(jq -r '.loggedToHistory // false' "$CACHE" 2>/dev/null || echo "false")"
   PREV_TITLE="$(jq -r '.title // ""' "$CACHE" 2>/dev/null || echo "")"
