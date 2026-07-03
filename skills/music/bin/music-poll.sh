@@ -131,6 +131,12 @@ DURATION="$(to_num "$DURATION_RAW")"
 ELAPSED="$(to_num "$ELAPSED_RAW")"
 RATE="$(to_num "$RATE_RAW")"
 
+# App blocklist — ignore media sessions from non-music apps.
+BLOCKED_BUNDLES="com.figma.Desktop com.figma.agent"
+for _b in $BLOCKED_BUNDLES; do
+  [[ "$BUNDLE_ID" == "$_b" ]] && exit 0
+done
+
 # Nothing playing → leave the cache untouched (preserves "vibe drift" of last song).
 if [[ -z "$TITLE" || "$TITLE" == "null" ]]; then
   exit 0
