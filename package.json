@@ -1,7 +1,7 @@
 {
   "name": "vibing-supply",
   "version": "0.1.3",
-  "description": "Music-synced session vibe for Claude Code: read what you're listening to, mirror it.",
+  "description": "Track what you listen to while you code — a local play-history daemon any agent can read. Works with any macOS music app, best with Spotify.",
   "bin": {
     "vibing-supply": "cli.js"
   },

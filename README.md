@@ -1,10 +1,12 @@
 # vibing-supply
 
-Music-synced session vibe for [Claude Code](https://www.anthropic.com/claude-code).
+Keeps a local record of what you listen to while you code, for any coding agent to read.
 
-Reads what you're playing in any macOS music app (Spotify, Apple Music, QQ Music, NetEase, browser tabs that use Media Session API) and writes the metadata + recent track history into a snapshot file at `~/.cache/music/now-playing.txt` on every turn — Claude reads it on demand when music is relevant, so the prompt itself stays clean.
+A background daemon picks up whatever's playing in any macOS music app (Spotify, Apple Music, QQ Music, NetEase, browser tabs that use the Media Session API) — title, artist, album, genre — and builds a running play history: what you skipped, what you had on repeat, the albums you sat with. The live state lands in `~/.cache/music/now-playing.txt`; the history in `~/.cache/music/play_history.md`. Both are plain files on disk, so any agent that can read a file can use them — Claude Code is one integration, not a requirement.
 
-The signal is intentionally minimal: nothing tells Claude "be terse" or "use emoji". When Claude opens the snapshot, it sees what you're listening to and decides per-task whether the music is relevant (creative / open-ended asks) or to be ignored (debugging, transactional work).
+Everything stays on your machine. Over time the history reads as taste: habits, favorites, and the mood you've been in lately from how your listening has drifted. It works with any app, and it's best with Spotify — connecting it adds finer signals (liked songs, top tracks/artists over time) plus playback control on Premium.
+
+Ships with a Claude Code skill: a `UserPromptSubmit` hook that refreshes the snapshot each turn (it never injects into the prompt — the agent reads on demand) and a live 🎧 statusline.
 
 ## Install
 
