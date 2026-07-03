@@ -1,11 +1,11 @@
 ---
 name: music
-description: Make Claude session-aware of the music the user is currently listening to. Reads now-playing metadata, genre, cover art, and listening behavior from macOS MediaRemote and Spotify and writes a fresh snapshot to `~/.cache/music/now-playing.txt` on every turn — Claude reads it on demand instead of having it injected into every prompt. Also lets Claude control playback (play/pause/skip/volume/queue/save) when the user asks. Use this skill when the user wants Claude's tone to follow their music, when they ask "what am I listening to", to control Spotify, or to install / uninstall / explain the music mechanism.
+description: Keep Claude aware of the user's music without noise. By default a launchd daemon records every track the user plays into a local listening log (`~/.cache/music/play_history.md`) with skip/repeat/album-run signals, and on each turn refreshes a `<now-playing>` snapshot at `~/.cache/music/now-playing.txt` that Claude reads on demand — nothing is injected into the prompt. With Spotify connected it also builds a Wrapped-style taste profile (top tracks/artists across short/medium/long-term windows) and, on Premium, controls playback (play/pause/skip/volume/queue/save). Use this skill when the user asks "what am I listening to", wants Claude's tone to follow their music, wants their listening trend / taste summary, to control Spotify, or to install / uninstall / explain the music mechanism.
 ---
 
 # Music — Session-Aware Listening Context
 
-A Claude Code skill that turns the user's current music into a session-wide signal and gives Claude a thin remote control. No presets, no schema. The mechanism is intentionally minimal: poll, cache, inject — let Claude derive everything.
+A Claude Code skill that records the user's listening history and, on demand, surfaces what they're playing right now. No presets, no schema. The mechanism is intentionally minimal: poll, cache, log — let Claude derive everything. Nothing is pushed into the prompt; Claude reads the snapshot only when music is relevant.
 
 ## Capability tiers
 
@@ -13,7 +13,7 @@ The skill works at three levels; everything past tier 0 is opt-in.
 
 | Tier | Setup | What works |
 |---|---|---|
-| **0 (default)** | `install.sh` only | nowplaying-cli sensor: title/artist/album, cover art, iTunes genre, skip/repeat detection, on-demand `<now-playing>` snapshot file, statusline, history file |
+| **0 (default)** | `install.sh` only | nowplaying-cli sensor: title/artist/album, iTunes genre, skip/repeat detection, on-demand `<now-playing>` snapshot file, statusline, persistent history log |
 | **1 (Spotify Free)** | + register Spotify app + `music-spotify-setup.py <client_id>` | tier 0 + Liked detection in the snapshot, recently-played backfill, top tracks/artists, finer-grained Spotify genres, live shuffle/repeat/context/device state |
 | **2 (Spotify Premium)** | tier 1 with a Premium account | tier 1 + playback control via `music-control.sh` (play/pause/skip/save/queue/transfer/etc.) |
 
@@ -26,7 +26,6 @@ When suggesting a Spotify-tier feature to the user, check capabilities first ins
 - Detects the currently playing track on macOS (any player: Spotify, Apple Music, QQ Music, NetEase, browser tabs that use Media Session API…).
 - A launchd `KeepAlive` daemon runs `music-poll.sh` every 2 seconds, keeping the cache at `/tmp/music-current.json` fresh independently of Claude Code activity.
 - On every song change:
-  - Saves cover art to `/tmp/music-cover.jpg` for multimodal context.
   - Enriches with genre via iTunes Search API (free, no auth) and — at tier ≥1 — Spotify artist genres.
   - At tier ≥1: pulls Spotify live state in one shot — shuffle, repeat, playback context (album/playlist/artist radio), active device, and Liked status (cross-referenced against `~/.cache/music/liked_tracks.json`).
   - Tracks listening behavior: skip detection, repeat counting, album runs.
@@ -132,7 +131,7 @@ Free accounts → tier 1 (read-only Spotify enrichment). Premium → tier 2 (add
 
 | Path | Purpose |
 |---|---|
-| `bin/music-poll.sh` | Core sensor: MediaRemote → cache, cover, enrichment, behavior signals, history. |
+| `bin/music-poll.sh` | Core sensor: MediaRemote → cache, enrichment, behavior signals, history. |
 | `bin/music-enrich.sh` | Genre enrichment: iTunes Search API + Spotify API. |
 | `bin/music-spotify-auth.sh` | Sourced helper: token management with auto-refresh. |
 | `bin/music-player-state.sh` | One-shot Spotify state pull (shuffle/repeat/context/device + Liked). |
