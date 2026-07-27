@@ -7,6 +7,8 @@
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
+const packageJson = require('./package.json');
+const { reportSuccessfulInstall } = require('./telemetry');
 
 const SKILL_DIR = path.join(__dirname, 'skills', 'music');
 const BIN_DIR = path.join(SKILL_DIR, 'bin');
@@ -38,23 +40,47 @@ function usage(exitCode = 0) {
   process.exit(exitCode);
 }
 
-if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
-  usage(0);
+async function main() {
+  if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
+    usage(0);
+  }
+
+  const entry = COMMANDS[cmd];
+  if (!entry) {
+    process.stderr.write(`unknown command: ${cmd}\n\n`);
+    usage(2);
+  }
+
+  const [interpreter, scriptPath] = entry;
+  if (!fs.existsSync(scriptPath)) {
+    process.stderr.write(`script missing: ${scriptPath}\n`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Forward any extra args past the subcommand (e.g. spotify-setup <client_id>).
+  const extraArgs = process.argv.slice(3);
+  const result = spawnSync(interpreter, [scriptPath, ...extraArgs], {
+    stdio: 'inherit',
+  });
+  const exitCode = result.status ?? 1;
+
+  // Count completed installs, not attempts. Reporting is anonymous,
+  // best-effort, and never changes the install result.
+  if (cmd === 'install' && exitCode === 0) {
+    try {
+      await reportSuccessfulInstall({
+        packageRoot: __dirname,
+        version: packageJson.version,
+      });
+    } catch {
+      // Ignore analytics failures so a completed install remains successful.
+    }
+  }
+
+  process.exitCode = exitCode;
 }
 
-const entry = COMMANDS[cmd];
-if (!entry) {
-  process.stderr.write(`unknown command: ${cmd}\n\n`);
-  usage(2);
-}
-
-const [interpreter, scriptPath] = entry;
-if (!fs.existsSync(scriptPath)) {
-  process.stderr.write(`script missing: ${scriptPath}\n`);
-  process.exit(1);
-}
-
-// Forward any extra args past the subcommand (e.g. spotify-setup <client_id>).
-const extraArgs = process.argv.slice(3);
-const result = spawnSync(interpreter, [scriptPath, ...extraArgs], { stdio: 'inherit' });
-process.exit(result.status ?? 1);
+main().catch(() => {
+  process.exitCode = 1;
+});

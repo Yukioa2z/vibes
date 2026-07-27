@@ -39,4 +39,9 @@ jobs:
             exit 1
           fi
 
+      # Present only inside the npm tarball. GitHub-direct installs have no
+      # marker, which lets anonymous install telemetry split the two sources.
+      - name: Mark npm distribution
+        run: node -e "require('fs').writeFileSync('distribution.json', JSON.stringify({source:'npm'}))"
+
       - run: npm publish --provenance --access public

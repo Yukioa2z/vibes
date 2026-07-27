@@ -33,6 +33,17 @@ After install, the hook is active in any **new** Claude Code session — it refr
 
 To make `🎧` your default statusline, edit `~/.claude/statusline-command.sh` and change the fallback from `pomodoro` to `music`.
 
+### Anonymous install count
+
+After `install` completes successfully, the CLI sends one anonymous event to
+`vibing.supply`. It contains only a random installation ID, the package version,
+and whether the install came from npm or GitHub. It does not send usernames,
+paths, listening history, or machine details. The random ID is stored at
+`~/.config/vibing-supply/installation-id` so repeat installs can be counted
+separately from unique installations.
+
+Set `VIBING_SUPPLY_TELEMETRY=0` to disable this event.
+
 ## Uninstall
 
 ```bash
