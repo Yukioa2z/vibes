@@ -29,8 +29,25 @@ emit_empty() {
   exit 0
 }
 
+AUTH_ERROR="$SNAPSHOT_DIR/auth-error.txt"
+
+# A revoked Spotify authorization outlives every other signal here: the
+# cache goes empty, so the "nothing playing" paths below would wipe the
+# snapshot and hide the one thing worth reporting. Keep the notice in
+# both cases — it's the only place the user ever sees it.
+auth_error_line() {
+  [[ -s "$AUTH_ERROR" ]] || return 0
+  printf 'Spotify auth revoked (%s) — re-run: python3 %s/music-spotify-setup.py <client_id>\n' \
+    "$(head -1 "$AUTH_ERROR")" "$SCRIPT_DIR"
+}
+
 clear_snapshot() {
-  : > "$SNAPSHOT" 2>/dev/null || true
+  local auth; auth="$(auth_error_line)"
+  if [[ -n "$auth" ]]; then
+    printf '<now-playing>\n%s</now-playing>\n' "$auth" > "$SNAPSHOT" 2>/dev/null || true
+  else
+    : > "$SNAPSHOT" 2>/dev/null || true
+  fi
 }
 
 # Safety refresh if cache is missing or stale.
@@ -138,6 +155,7 @@ TMP="$(mktemp)"
   if [[ -n "$DRIFT_INLINE" ]]; then
     printf 'Drift: %s\n' "$DRIFT_INLINE"
   fi
+  auth_error_line
   printf '</now-playing>\n'
 } > "$TMP"
 

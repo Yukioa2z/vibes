@@ -17,6 +17,15 @@ cat >/dev/null
 
 bash "$POLL" >/dev/null 2>&1 || true
 
+# Revoked authorization takes precedence over track rendering, and must
+# come before the empty-title exits — a dead token is exactly when the
+# cache has nothing in it, so the normal paths would render nothing at all.
+AUTH_ERROR="$HOME/.cache/music/auth-error.txt"
+if [[ -s "$AUTH_ERROR" ]]; then
+  printf '🎧 Spotify auth revoked — re-run music-spotify-setup.py\n'
+  exit 0
+fi
+
 [[ -f "$CACHE" ]] || exit 0
 
 TITLE="$(jq -r '.title // ""' "$CACHE")"
