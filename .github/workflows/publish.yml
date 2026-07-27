@@ -27,7 +27,7 @@ jobs:
 
       # OIDC trusted publishing needs npm >= 11.5.1; setup-node ships older.
       - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
+        run: npm install -g npm@11
 
       # Guard: the git tag must equal the package.json version, so a
       # mistagged push can't publish the wrong version.
