@@ -1,6 +1,6 @@
 {
   "name": "vibing-supply",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Track what you listen to while you code — a local play-history daemon any agent can read. Works with any macOS music app, best with Spotify.",
   "bin": {
     "vibing-supply": "cli.js"
