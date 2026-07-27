@@ -84,7 +84,7 @@ Songs listened to for ≥ 30 seconds are appended to the persistent play history
 | **1 (Spotify Free)** | + register your own Spotify app + run setup | tier 0 + Liked detection, recently-played backfill, top tracks/artists, finer Spotify genres, live shuffle/repeat/context |
 | **2 (Spotify Premium)** | tier 1 with a Premium account | tier 1 + playback control (play/pause/skip/save/queue/transfer/etc.) |
 
-Run `bash skills/music/bin/music-capabilities.sh` to see what tier this install is on.
+Run `npx vibing-supply capabilities` to see what tier this install is on.
 
 ## Optional: Spotify (tiers 1 & 2)
 
@@ -96,9 +96,9 @@ vibing-supply does **not** ship a Spotify app — you bring your own. Free, take
 2. Copy the Client ID, then:
 
 ```bash
-npx vibing-supply spotify-setup <client_id>           # one-time OAuth
-bash skills/music/bin/music-history-sync.sh all       # seed Taste/Backfill/Liked cache
-bash skills/music/bin/music-capabilities.sh           # confirm what unlocked
+npx vibing-supply spotify-setup <client_id>   # one-time OAuth
+npx vibing-supply sync all                    # seed Taste/Backfill/Liked cache
+npx vibing-supply capabilities                # confirm what unlocked
 ```
 
 Tokens land at `~/.config/music/spotify.json` (gitignored).

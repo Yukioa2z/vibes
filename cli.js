@@ -19,6 +19,7 @@ const COMMANDS = {
   uninstall:       ['bash',    path.join(SKILL_DIR, 'uninstall.sh')],
   'spotify-setup': ['python3', path.join(BIN_DIR,   'music-spotify-setup.py')],
   capabilities:    ['bash',    path.join(BIN_DIR,   'music-capabilities.sh')],
+  sync:            ['bash',    path.join(BIN_DIR,   'music-history-sync.sh')],
 };
 
 const cmd = process.argv[2];
@@ -32,6 +33,7 @@ function usage(exitCode = 0) {
     '  npx vibing-supply uninstall                 reverse the install\n' +
     '  npx vibing-supply spotify-setup <client_id> one-time Spotify OAuth — bring your own app\n' +
     '                                              (https://developer.spotify.com/dashboard)\n' +
+    '  npx vibing-supply sync all                  seed taste profile from Spotify history\n' +
     '  npx vibing-supply capabilities              show what tier this install is on\n' +
     '\n' +
     'GitHub-direct alternative (no npm publish required):\n' +
