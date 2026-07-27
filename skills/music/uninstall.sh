@@ -21,7 +21,10 @@ COMMANDS_USER_DIR="$HOME/.claude/commands"
 CLAUDE_MD="$HOME/.claude/CLAUDE.md"
 SUPPORT_DIR="$HOME/Library/Application Support/music"
 PLIST="$HOME/Library/LaunchAgents/supply.music.poll.plist"
-HOOK_MARK="$BIN_DIR/music-hook.sh"
+# Filename, not full path: entries written by earlier versions point at
+# absolute paths we can't reconstruct (npx cache dirs are content-hashed),
+# and matching on the full path left them behind on uninstall.
+HOOK_MARK="music-hook.sh"
 
 say() { printf '\033[36m[music]\033[0m %s\n' "$*"; }
 
@@ -31,12 +34,13 @@ if [[ -f "$SETTINGS" ]]; then
   tmp="$(mktemp)"
   jq --arg m "$HOOK_MARK" '
     if .hooks.UserPromptSubmit then
+      # Remove our commands individually, then drop entries left empty.
+      # Filtering whole entries instead would take an unrelated hook with
+      # us whenever the user has one sharing the same entry.
       .hooks.UserPromptSubmit |= map(
-        select(
-          (.hooks // [])
-          | all((.command // "") | (contains($m) | not))
-        )
+        .hooks = ((.hooks // []) | map(select((.command // "") | contains($m) | not)))
       )
+      | .hooks.UserPromptSubmit |= map(select((.hooks // []) | length > 0))
     else . end
   ' "$SETTINGS" > "$tmp"
   mv -f "$tmp" "$SETTINGS"
@@ -84,7 +88,10 @@ if [[ -d "$SUPPORT_DIR" ]]; then
   rm -f "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/daemon.sh" \
         "$SUPPORT_DIR/music-enrich.sh" \
         "$SUPPORT_DIR/music-spotify-auth.sh" \
-        "$SUPPORT_DIR/music-player-state.sh"
+        "$SUPPORT_DIR/music-player-state.sh" \
+        "$SUPPORT_DIR/music-hook.sh" \
+        "$SUPPORT_DIR/music-statusline.sh" \
+        "$SUPPORT_DIR/music-poll.sh"
   rmdir "$SUPPORT_DIR" 2>/dev/null || true
 fi
 

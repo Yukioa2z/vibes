@@ -22,8 +22,19 @@ SUPPORT_DIR="$HOME/Library/Application Support/music"
 PLIST="$HOME/Library/LaunchAgents/supply.music.poll.plist"
 PLIST_LABEL="supply.music.poll"
 
-HOOK_CMD="bash \"$BIN_DIR/music-hook.sh\""
-HOOK_MARK="$BIN_DIR/music-hook.sh"
+# Hook and statusline run from copies in SUPPORT_DIR, never from BIN_DIR.
+# BIN_DIR is wherever the package happens to sit, and for `npx` users that
+# is a content-hashed cache path (~/.npm/_npx/<hash>/…) that changes with
+# every version — a hard-coded reference there breaks on the next upgrade
+# and is silently pruned by `npm cache clean`. The daemon already runs
+# from copies for the same class of reason (launchd TCC).
+RUN_DIR="$SUPPORT_DIR"
+HOOK_CMD="bash \"$RUN_DIR/music-hook.sh\""
+# Match on filename, not full path: the mark has to recognize entries
+# written by ANY earlier version, whose absolute paths we cannot predict.
+# Without this, each upgrade appends a duplicate hook pointing at a dead
+# npx directory, and uninstall leaves the old ones behind.
+HOOK_MARK="music-hook.sh"
 CLAUDE_MD_LINE='- Music context (managed by music skill, not auto-injected): current track snapshot at `~/.cache/music/now-playing.txt`, full listening log at `~/.cache/music/play_history.md`. Read when the user asks about what they are listening to, when matching tone to current music makes sense, or when they ask about listening patterns / vibe drift.'
 
 say() { printf '\033[36m[music]\033[0m %s\n' "$*"; }
@@ -42,27 +53,39 @@ mkdir -p "$STATUSLINES_DIR" "$HISTORY_DIR" "$(dirname "$SETTINGS")" "$SUPPORT_DI
 say "registering UserPromptSubmit hook"
 [[ -f "$SETTINGS" ]] || echo '{}' > "$SETTINGS"
 
-# Skip if our hook is already present.
-if jq -e --arg m "$HOOK_MARK" '
+# Drop every entry of ours — any version, any path — then add exactly one
+# pointing at RUN_DIR. Rewriting rather than skipping is what repairs an
+# install that already carries a stale npx path; skipping would preserve it.
+STALE_HOOKS="$(jq -r --arg m "$HOOK_MARK" '
   [.hooks.UserPromptSubmit // [] | .[].hooks // [] | .[].command // ""]
-  | any(. | contains($m))
-' "$SETTINGS" >/dev/null 2>&1; then
-  say "  hook already registered — skipping"
-else
-  tmp="$(mktemp)"
-  jq --arg cmd "$HOOK_CMD" '
-    .hooks //= {} |
-    .hooks.UserPromptSubmit //= [] |
-    .hooks.UserPromptSubmit += [{
-      hooks: [{
-        type: "command",
-        command: $cmd,
-        timeout: 5
-      }]
+  | map(select(contains($m) and (contains($m) and (test("Application Support/music") | not))))
+  | length
+' "$SETTINGS" 2>/dev/null || echo 0)"
+
+tmp="$(mktemp)"
+jq --arg m "$HOOK_MARK" --arg cmd "$HOOK_CMD" '
+  .hooks //= {} |
+  .hooks.UserPromptSubmit //= [] |
+  # Strip our own entries, keeping any unrelated hooks the user added.
+  .hooks.UserPromptSubmit |= map(
+    .hooks = ((.hooks // []) | map(select((.command // "") | contains($m) | not)))
+  ) |
+  # An entry whose hooks list is now empty was purely ours — drop it, but
+  # never drop one that still holds someone else'"'"'s hook.
+  .hooks.UserPromptSubmit |= map(select((.hooks // []) | length > 0)) |
+  .hooks.UserPromptSubmit += [{
+    hooks: [{
+      type: "command",
+      command: $cmd,
+      timeout: 5
     }]
-  ' "$SETTINGS" > "$tmp"
-  mv -f "$tmp" "$SETTINGS"
-  say "  added"
+  }]
+' "$SETTINGS" > "$tmp"
+mv -f "$tmp" "$SETTINGS"
+if [[ "${STALE_HOOKS:-0}" -gt 0 ]]; then
+  say "  replaced $STALE_HOOKS stale hook entr$([[ "$STALE_HOOKS" == 1 ]] && echo y || echo ies)"
+else
+  say "  registered"
 fi
 
 # ── 4. install statusline vibe option ───────────────────────────────
@@ -79,7 +102,7 @@ BASE_SCRIPT="\$HOME/.claude/statuslines/\${BASE}.sh"
 if [[ -x "\$BASE_SCRIPT" && "\$BASE" != "music" ]]; then
   printf '%s' "\$input" | bash "\$BASE_SCRIPT" || true
 fi
-printf '%s' "\$input" | bash "$BIN_DIR/music-statusline.sh" || true
+printf '%s' "\$input" | bash "$RUN_DIR/music-statusline.sh" || true
 EOF
 chmod +x "$STATUSLINES_DIR/music.sh"
 
@@ -95,7 +118,14 @@ cp "$BIN_DIR/music-poll.sh"          "$SUPPORT_DIR/poll.sh"
 cp "$BIN_DIR/music-enrich.sh"        "$SUPPORT_DIR/music-enrich.sh"
 cp "$BIN_DIR/music-spotify-auth.sh"  "$SUPPORT_DIR/music-spotify-auth.sh"
 cp "$BIN_DIR/music-player-state.sh"  "$SUPPORT_DIR/music-player-state.sh"
-chmod +x "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/music-enrich.sh" "$SUPPORT_DIR/music-player-state.sh"
+# Hook and statusline also run from here (see RUN_DIR above). Both locate
+# their helpers as siblings via SCRIPT_DIR, so music-poll.sh must exist
+# under its own name too — poll.sh is the daemon's copy, a different name.
+cp "$BIN_DIR/music-hook.sh"          "$SUPPORT_DIR/music-hook.sh"
+cp "$BIN_DIR/music-statusline.sh"    "$SUPPORT_DIR/music-statusline.sh"
+cp "$BIN_DIR/music-poll.sh"          "$SUPPORT_DIR/music-poll.sh"
+chmod +x "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/music-enrich.sh" "$SUPPORT_DIR/music-player-state.sh" \
+         "$SUPPORT_DIR/music-hook.sh" "$SUPPORT_DIR/music-statusline.sh" "$SUPPORT_DIR/music-poll.sh"
 cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 #!/bin/bash
 # Long-running poll loop. macOS throttles short StartInterval values,

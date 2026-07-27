@@ -31,6 +31,8 @@ The installer:
 
 After install, the hook is active in any **new** Claude Code session — it refreshes the snapshot file every turn but does not inject anything into the prompt.
 
+The hook, statusline, and daemon all run from copies under `~/Library/Application Support/music/`, not from the package directory — `npx` installs live in a content-hashed cache path that changes on every upgrade. Editing the source therefore requires re-running install before the change takes effect.
+
 To make `🎧` your default statusline, edit `~/.claude/statusline-command.sh` and change the fallback from `pomodoro` to `music`.
 
 ### Anonymous install count
