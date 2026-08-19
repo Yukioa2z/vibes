@@ -131,11 +131,30 @@ DURATION="$(to_num "$DURATION_RAW")"
 ELAPSED="$(to_num "$ELAPSED_RAW")"
 RATE="$(to_num "$RATE_RAW")"
 
-# App blocklist — ignore media sessions from non-music apps.
-BLOCKED_BUNDLES="com.figma.Desktop com.figma.agent"
-for _b in $BLOCKED_BUNDLES; do
-  [[ "$BUNDLE_ID" == "$_b" ]] && exit 0
+# App allowlist — only record media sessions from known media sources.
+# MediaRemote surfaces now-playing from any app; games/Figma/other apps
+# are dropped. Note this list is intentionally broad (players + browsers
+# + video apps), so non-music media (VLC films, Apple TV+, podcasts) will
+# also be logged — the skip filter (heard-time > 0) is what suppresses
+# the paused-ghost noise, not this gate.
+#   com.spotify.client       Spotify desktop (also drives the liked/state API)
+#   com.apple.Music          Apple Music
+#   com.tencent.QQMusicMac   QQ Music (verified on this machine)
+#   com.google.Chrome        Chrome (any tab, incl. YouTube Music)
+#   com.apple.Safari         Safari
+#   org.mozilla.firefox      Firefox
+#   org.videolan.vlc         VLC
+#   com.apple.TV             Apple TV+
+#   com.apple.podcasts       Podcasts
+#   com.colliderli.iina      IINA
+#   company.thebrowser.Browser  Arc
+# TODO netease: add once installed and its real bundle id is verified.
+ALLOWED_BUNDLES="com.spotify.client com.apple.Music com.tencent.QQMusicMac com.google.Chrome com.apple.Safari org.mozilla.firefox org.videolan.vlc com.apple.TV com.apple.podcasts com.colliderli.iina company.thebrowser.Browser"
+_allowed=false
+for _b in $ALLOWED_BUNDLES; do
+  [[ "$BUNDLE_ID" == "$_b" ]] && { _allowed=true; break; }
 done
+[[ "$_allowed" == "true" ]] || exit 0
 
 # Nothing playing → leave the cache untouched (preserves "vibe drift" of last song).
 if [[ -z "$TITLE" || "$TITLE" == "null" ]]; then
@@ -177,8 +196,15 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
   # RECENT_LIMIT) — but skip ads to keep drift signal clean.
   PREV_WAS_SKIP=false
   if [[ -n "$PREV_TRACK_KEY" && "$(is_ad "$PREV_TITLE" "$PREV_ARTIST")" == "false" ]]; then
-    # A song listened to < SKIP_THRESHOLD seconds counts as a skip.
-    (( PREV_PLAYED < SKIP_THRESHOLD )) && PREV_WAS_SKIP=true
+    # A song listened to < SKIP_THRESHOLD seconds counts as a skip —
+    # but only if we actually observed it playing. A track with 0 heard
+    # seconds was never really played: it's a paused-ghost handoff (e.g.
+    # closing a browser tab hands MediaRemote focus back to a paused
+    # Spotify session), not a user skip. Requiring PREV_PLAYED > 0 both
+    # kills those ghosts and drops the noisy `skipped 0s` line, while
+    # still logging genuine quick-skips (which always accrue a second or
+    # two of rate==1 playtime before the next track change).
+    (( PREV_PLAYED > 0 && PREV_PLAYED < SKIP_THRESHOLD )) && PREV_WAS_SKIP=true
     NEW_RECENT="$(jq -c \
       --arg t "$PREV_TITLE" \
       --arg a "$PREV_ARTIST" \
