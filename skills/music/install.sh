@@ -118,6 +118,9 @@ cp "$BIN_DIR/music-poll.sh"          "$SUPPORT_DIR/poll.sh"
 cp "$BIN_DIR/music-enrich.sh"        "$SUPPORT_DIR/music-enrich.sh"
 cp "$BIN_DIR/music-spotify-auth.sh"  "$SUPPORT_DIR/music-spotify-auth.sh"
 cp "$BIN_DIR/music-player-state.sh"  "$SUPPORT_DIR/music-player-state.sh"
+# The daemon periodically refreshes the Liked cache via this script, so it
+# must live beside its helpers (it sources music-spotify-auth.sh).
+cp "$BIN_DIR/music-history-sync.sh"  "$SUPPORT_DIR/music-history-sync.sh"
 # Hook and statusline also run from here (see RUN_DIR above). Both locate
 # their helpers as siblings via SCRIPT_DIR, so music-poll.sh must exist
 # under its own name too — poll.sh is the daemon's copy, a different name.
@@ -125,7 +128,8 @@ cp "$BIN_DIR/music-hook.sh"          "$SUPPORT_DIR/music-hook.sh"
 cp "$BIN_DIR/music-statusline.sh"    "$SUPPORT_DIR/music-statusline.sh"
 cp "$BIN_DIR/music-poll.sh"          "$SUPPORT_DIR/music-poll.sh"
 chmod +x "$SUPPORT_DIR/poll.sh" "$SUPPORT_DIR/music-enrich.sh" "$SUPPORT_DIR/music-player-state.sh" \
-         "$SUPPORT_DIR/music-hook.sh" "$SUPPORT_DIR/music-statusline.sh" "$SUPPORT_DIR/music-poll.sh"
+         "$SUPPORT_DIR/music-hook.sh" "$SUPPORT_DIR/music-statusline.sh" "$SUPPORT_DIR/music-poll.sh" \
+         "$SUPPORT_DIR/music-history-sync.sh"
 cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 #!/bin/bash
 # Long-running poll loop. macOS throttles short StartInterval values,
@@ -142,6 +146,33 @@ cat > "$SUPPORT_DIR/daemon.sh" <<EOF
 INTERVAL=2
 POLL_TIMEOUT=15
 POLL="$SUPPORT_DIR/poll.sh"
+# Liked cache refresh. /me/tracks/contains is dead for new Spotify apps,
+# so liked status is judged against a local snapshot that only this sync
+# refreshes. Nothing else triggers it, so fold it into the poll loop:
+# once every SYNC_EVERY iterations (900 × 2s ≈ 30min). Bounded by its own
+# timeout so a slow Spotify call can't stall polling; failure is ignored.
+SYNC="$SUPPORT_DIR/music-history-sync.sh"
+SYNC_EVERY=900
+SYNC_TIMEOUT=20
+_sync_ticks=0
+
+run_sync() {
+  [[ -f "\$SYNC" ]] || return
+  local bin=""
+  command -v gtimeout >/dev/null 2>&1 && bin="gtimeout"
+  [[ -z "\$bin" ]] && command -v timeout >/dev/null 2>&1 && bin="timeout"
+  if [[ -n "\$bin" ]]; then
+    "\$bin" -k 2 "\$SYNC_TIMEOUT" /bin/bash "\$SYNC" library >/dev/null 2>>/tmp/music-sync.err || true
+  else
+    /bin/bash "\$SYNC" library >/dev/null 2>>/tmp/music-sync.err &
+    local sp=\$!
+    ( sleep "\$SYNC_TIMEOUT"; kill -KILL "\$sp" 2>/dev/null ) &
+    local swd=\$!
+    wait "\$sp" 2>/dev/null || true
+    kill -KILL "\$swd" 2>/dev/null
+    wait "\$swd" 2>/dev/null
+  fi
+}
 
 run_poll() {
   local bin=""
@@ -172,6 +203,12 @@ run_poll() {
 
 while true; do
   run_poll
+  # Refresh the Liked cache on the first iteration and every SYNC_EVERY
+  # thereafter (first run seeds it immediately after a daemon restart).
+  if (( _sync_ticks % SYNC_EVERY == 0 )); then
+    run_sync
+  fi
+  _sync_ticks=\$(( _sync_ticks + 1 ))
   sleep "\$INTERVAL"
 done
 EOF

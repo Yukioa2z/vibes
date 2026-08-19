@@ -4,8 +4,8 @@
 # Called by music-poll.sh on every track-change event. ONE round trip:
 # /me/player gives us is_playing + shuffle + repeat + device + context +
 # the Spotify track id. We then cross-ref the id against the local
-# liked_tracks.json cache (refreshed periodically by music-history-sync.sh
-# library) to derive `liked: true/false`.
+# liked_tracks.json cache (refreshed by the poll daemon every ~30min via
+# music-history-sync.sh library) to derive `liked: true/false`.
 #
 # Outputs a JSON object meant to be jq-merged into /tmp/music-current.json.
 # All keys are namespaced under `spotify` to avoid clashing with the
