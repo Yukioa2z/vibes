@@ -2,9 +2,9 @@
 
 Keeps a local record of what you listen to while you code, for any coding agent to read.
 
-A background daemon picks up whatever's playing in any macOS music app (Spotify, Apple Music, QQ Music, NetEase, browser tabs that use the Media Session API) — title, artist, album, genre — and builds a running play history: what you skipped, what you had on repeat, the albums you sat with. The live state lands in `~/.cache/music/now-playing.txt`; the history in `~/.cache/music/play_history.md`. Both are plain files on disk, so any agent that can read a file can use them — Claude Code is one integration, not a requirement.
+A background daemon picks up whatever's playing in a known set of macOS media sources (Spotify, Apple Music, QQ Music, and browsers like Chrome/Safari/Firefox/Arc via the Media Session API) — title, artist, album, genre — and builds a running play history: what you skipped, what you had on repeat, the albums you sat with. The live state lands in `~/.cache/music/now-playing.txt`; the history in `~/.cache/music/play_history.md`. Both are plain files on disk, so any agent that can read a file can use them — Claude Code is one integration, not a requirement.
 
-Everything stays on your machine. Over time the history reads as taste: habits, favorites, and the mood you've been in lately from how your listening has drifted. It works with any app, and it's best with Spotify — connecting it adds finer signals (liked songs, top tracks/artists over time) plus playback control on Premium.
+Everything stays on your machine. Over time the history reads as taste: habits, favorites, and the mood you've been in lately from how your listening has drifted. It works with any of those sources, and it's best with Spotify — connecting it adds finer signals (liked songs, top tracks/artists over time) plus playback control on Premium.
 
 Ships with a Claude Code skill: a `UserPromptSubmit` hook that refreshes the snapshot each turn (it never injects into the prompt — the agent reads on demand) and a live 🎧 statusline.
 
