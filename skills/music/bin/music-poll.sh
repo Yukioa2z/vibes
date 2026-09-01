@@ -163,7 +163,11 @@ fi
 
 NOW="$(date +%s)"
 TRACK_KEY="${TITLE}::${ARTIST}"
-ISO_NOW="$(date -u +%Y-%m-%dT%H:%M)"
+# Local wall-clock time with an explicit offset (e.g. 2026-09-01T11:24+08:00)
+# so history reads as the hour you actually listened AND stays unambiguous
+# when shards from machines in different timezones are merged. BSD date has
+# no %:z, so insert the colon into %z (+0800 → +08:00) by hand.
+ISO_NOW="$(date +%Y-%m-%dT%H:%M%z | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
 
 PREV_TRACK_KEY=""
 PREV_LOGGED="false"
