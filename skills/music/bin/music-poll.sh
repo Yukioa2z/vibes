@@ -173,6 +173,7 @@ PREV_RECENT="[]"
 PREV_PLAYED=0
 PREV_POSITION=0
 PREV_TICK_AT="$NOW"
+LAST_SKIP_LOGGED=""
 if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
   PREV_TRACK_KEY="$(jq -r '.trackKey // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_LOGGED="$(jq -r '.loggedToHistory // false' "$CACHE" 2>/dev/null || echo "false")"
@@ -182,6 +183,10 @@ if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
   PREV_PLAYED="$(jq -r '.playbackElapsed // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_POSITION="$(jq -r '.playbackPosition // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_TICK_AT="$(jq -r '.lastTickAt // 0' "$CACHE" 2>/dev/null || echo "$NOW")"
+  # Identity of the last skip line we already appended, so focus churn
+  # (MediaRemote handing playback back and forth) can't rewrite it every
+  # poll. Format: "<trackKey>@<ISO minute>".
+  LAST_SKIP_LOGGED="$(jq -r '.lastSkipLogged // ""' "$CACHE" 2>/dev/null || echo "")"
 fi
 
 write_cache() {
@@ -217,8 +222,17 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     # Log skipped tracks to history (the 30s-threshold path won't catch
     # them since they never crossed it). Captures interaction signal
     # that was previously only visible in the in-memory recent[] buffer.
-    if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" ]]; then
+    #
+    # Guard against focus churn: when MediaRemote hands playback back and
+    # forth, TRACK_KEY != PREV_TRACK_KEY keeps firing and would append the
+    # SAME skip line on every poll (all sharing one minute-precision ISO
+    # timestamp). Skip the write if we already logged this exact
+    # (trackKey, minute) skip. This mark rides in the cache below.
+    SKIP_MARK_NOW="${PREV_TRACK_KEY}@${ISO_NOW}"
+    if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" \
+          && "$SKIP_MARK_NOW" != "$LAST_SKIP_LOGGED" ]]; then
       printf '%s\n' "- ${ISO_NOW} — ${PREV_TITLE} · ${PREV_ARTIST} · skipped ${PREV_PLAYED}s" >> "$HISTORY"
+      LAST_SKIP_LOGGED="$SKIP_MARK_NOW"
     fi
   else
     NEW_RECENT="$PREV_RECENT"
@@ -276,6 +290,7 @@ except Exception:
     --argjson spotify "$SPOTIFY_JSON" \
     --arg startedAt "$ISO_NOW" \
     --arg bundleId "$BUNDLE_ID" \
+    --arg lastSkipLogged "$LAST_SKIP_LOGGED" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
       duration:$duration, initialElapsed:$initialElapsed,
       playbackElapsed:$playbackElapsed, playbackPosition:$playbackPosition,
@@ -283,6 +298,7 @@ except Exception:
       playbackRate:$playbackRate, recent:$recent,
       coverAvailable:$coverAvailable, coverShownToHook:false,
       startedAt:$startedAt, loggedToHistory:false,
+      lastSkipLogged:$lastSkipLogged,
       source:{bundleId:$bundleId}}
       + $enrich + $spotify' | write_cache
 
