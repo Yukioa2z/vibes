@@ -162,7 +162,12 @@ if [[ -z "$TITLE" || "$TITLE" == "null" ]]; then
 fi
 
 NOW="$(date +%s)"
-TRACK_KEY="${TITLE}::${ARTIST}"
+# Use ASCII Unit Separator (0x1f) between title and artist so the key is
+# injective: a plain "::" delimiter collided when a title contained "::"
+# (e.g. title "A::B" + artist "C" vs title "A" + artist "B::C"). This key
+# is internal (cache trackKey + skip dedupe); it never reaches history text.
+US=$'\x1f'
+TRACK_KEY="${TITLE}${US}${ARTIST}"
 # Local wall-clock time with an explicit offset (e.g. 2026-09-01T11:24+08:00)
 # so history reads as the hour you actually listened AND stays unambiguous
 # when shards from machines in different timezones are merged. BSD date has
@@ -187,9 +192,14 @@ if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
   PREV_PLAYED="$(jq -r '.playbackElapsed // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_POSITION="$(jq -r '.playbackPosition // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_TICK_AT="$(jq -r '.lastTickAt // 0' "$CACHE" 2>/dev/null || echo "$NOW")"
+  # When this play STARTED (epoch). Uniquely identifies this play instance
+  # of PREV, so the skip dedupe key survives focus churn (same instance →
+  # same key, even across a minute boundary) yet still admits a genuine
+  # second skip of the same track (a new play → new firstSeenAtUnix).
+  PREV_FIRST_SEEN="$(jq -r '.firstSeenAtUnix // 0' "$CACHE" 2>/dev/null || echo 0)"
   # Identity of the last skip line we already appended, so focus churn
-  # (MediaRemote handing playback back and forth) can't rewrite it every
-  # poll. Format: "<trackKey>@<ISO minute>".
+  # (MediaRemote handing playback back and forth) can't append it twice.
+  # Format: "<trackKey>@<firstSeenAtUnix>".
   LAST_SKIP_LOGGED="$(jq -r '.lastSkipLogged // ""' "$CACHE" 2>/dev/null || echo "")"
 fi
 
@@ -229,14 +239,24 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     #
     # Guard against focus churn: when MediaRemote hands playback back and
     # forth, TRACK_KEY != PREV_TRACK_KEY keeps firing and would append the
-    # SAME skip line on every poll (all sharing one minute-precision ISO
-    # timestamp). Skip the write if we already logged this exact
-    # (trackKey, minute) skip. This mark rides in the cache below.
-    SKIP_MARK_NOW="${PREV_TRACK_KEY}@${ISO_NOW}"
+    # SAME skip line on every poll. Key the dedupe on PREV's play instance
+    # (its firstSeenAtUnix), not the wall-clock minute: churn that spans a
+    # minute boundary still collapses to one line, while a genuine second
+    # skip of the same track — a NEW play with a fresh firstSeenAtUnix —
+    # is still logged. This mark rides in the cache below.
+    SKIP_MARK_NOW="${PREV_TRACK_KEY}@${PREV_FIRST_SEEN}"
     if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" \
           && "$SKIP_MARK_NOW" != "$LAST_SKIP_LOGGED" ]]; then
       printf '%s\n' "- ${ISO_NOW} — ${PREV_TITLE} · ${PREV_ARTIST} · skipped ${PREV_PLAYED}s" >> "$HISTORY"
       LAST_SKIP_LOGGED="$SKIP_MARK_NOW"
+      # Persist the mark immediately onto the CURRENT (still-PREV) cache.
+      # The full cache rewrite for the new song happens much later (after
+      # cover/enrich/state fetches); a SIGKILL in that gap would otherwise
+      # leave the skip line on disk with no mark, and a restart while PREV
+      # is current again would append it a second time.
+      if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
+        jq --arg m "$LAST_SKIP_LOGGED" '.lastSkipLogged = $m' "$CACHE" | write_cache
+      fi
     fi
   else
     NEW_RECENT="$PREV_RECENT"
