@@ -244,7 +244,16 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     # minute boundary still collapses to one line, while a genuine second
     # skip of the same track — a NEW play with a fresh firstSeenAtUnix —
     # is still logged. This mark rides in the cache below.
-    SKIP_MARK_NOW="${PREV_TRACK_KEY}@${PREV_FIRST_SEEN}"
+    #
+    # If a legacy cache has no firstSeenAtUnix, PREV_FIRST_SEEN is 0. Don't
+    # let distinct plays collapse onto "<trackKey>@0" and swallow a real
+    # skip: fall back to a per-poll-unique key (NOW), which never matches a
+    # prior mark — favouring an occasional duplicate over a lost skip.
+    if [[ "$PREV_FIRST_SEEN" == "0" || -z "$PREV_FIRST_SEEN" ]]; then
+      SKIP_MARK_NOW="${PREV_TRACK_KEY}@now-${NOW}"
+    else
+      SKIP_MARK_NOW="${PREV_TRACK_KEY}@${PREV_FIRST_SEEN}"
+    fi
     if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" \
           && "$SKIP_MARK_NOW" != "$LAST_SKIP_LOGGED" ]]; then
       printf '%s\n' "- ${ISO_NOW} — ${PREV_TITLE} · ${PREV_ARTIST} · skipped ${PREV_PLAYED}s" >> "$HISTORY"
