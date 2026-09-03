@@ -220,10 +220,12 @@ out = ["## Backfilled History",
 for it in reversed(items):
     t = it.get("track") or {}
     played = it.get("played_at", "")
-    # ISO 8601 → YYYY-MM-DDTHH:MM
+    # Spotify played_at is UTC; store as local wall-clock with an explicit
+    # offset (e.g. 2026-09-01T11:24+08:00) to match music-poll.sh.
     try:
         dt = datetime.datetime.fromisoformat(played.replace("Z", "+00:00"))
-        ts = dt.strftime("%Y-%m-%dT%H:%M")
+        ts = dt.astimezone().strftime("%Y-%m-%dT%H:%M%z")
+        ts = ts[:-2] + ":" + ts[-2:] if ts[-5] in "+-" else ts
     except Exception:
         ts = played[:16]
     name = t.get("name", "?")

@@ -162,8 +162,17 @@ if [[ -z "$TITLE" || "$TITLE" == "null" ]]; then
 fi
 
 NOW="$(date +%s)"
-TRACK_KEY="${TITLE}::${ARTIST}"
-ISO_NOW="$(date -u +%Y-%m-%dT%H:%M)"
+# Use ASCII Unit Separator (0x1f) between title and artist so the key is
+# injective: a plain "::" delimiter collided when a title contained "::"
+# (e.g. title "A::B" + artist "C" vs title "A" + artist "B::C"). This key
+# is internal (cache trackKey + skip dedupe); it never reaches history text.
+US=$'\x1f'
+TRACK_KEY="${TITLE}${US}${ARTIST}"
+# Local wall-clock time with an explicit offset (e.g. 2026-09-01T11:24+08:00)
+# so history reads as the hour you actually listened AND stays unambiguous
+# when shards from machines in different timezones are merged. BSD date has
+# no %:z, so insert the colon into %z (+0800 → +08:00) by hand.
+ISO_NOW="$(date +%Y-%m-%dT%H:%M%z | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
 
 PREV_TRACK_KEY=""
 PREV_LOGGED="false"
@@ -173,6 +182,7 @@ PREV_RECENT="[]"
 PREV_PLAYED=0
 PREV_POSITION=0
 PREV_TICK_AT="$NOW"
+LAST_SKIP_LOGGED=""
 if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
   PREV_TRACK_KEY="$(jq -r '.trackKey // ""' "$CACHE" 2>/dev/null || echo "")"
   PREV_LOGGED="$(jq -r '.loggedToHistory // false' "$CACHE" 2>/dev/null || echo "false")"
@@ -182,6 +192,15 @@ if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
   PREV_PLAYED="$(jq -r '.playbackElapsed // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_POSITION="$(jq -r '.playbackPosition // 0' "$CACHE" 2>/dev/null || echo 0)"
   PREV_TICK_AT="$(jq -r '.lastTickAt // 0' "$CACHE" 2>/dev/null || echo "$NOW")"
+  # When this play STARTED (epoch). Uniquely identifies this play instance
+  # of PREV, so the skip dedupe key survives focus churn (same instance →
+  # same key, even across a minute boundary) yet still admits a genuine
+  # second skip of the same track (a new play → new firstSeenAtUnix).
+  PREV_FIRST_SEEN="$(jq -r '.firstSeenAtUnix // 0' "$CACHE" 2>/dev/null || echo 0)"
+  # Identity of the last skip line we already appended, so focus churn
+  # (MediaRemote handing playback back and forth) can't append it twice.
+  # Format: "<trackKey>@<firstSeenAtUnix>".
+  LAST_SKIP_LOGGED="$(jq -r '.lastSkipLogged // ""' "$CACHE" 2>/dev/null || echo "")"
 fi
 
 write_cache() {
@@ -217,8 +236,36 @@ if [[ "$TRACK_KEY" != "$PREV_TRACK_KEY" ]]; then
     # Log skipped tracks to history (the 30s-threshold path won't catch
     # them since they never crossed it). Captures interaction signal
     # that was previously only visible in the in-memory recent[] buffer.
-    if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" ]]; then
+    #
+    # Guard against focus churn: when MediaRemote hands playback back and
+    # forth, TRACK_KEY != PREV_TRACK_KEY keeps firing and would append the
+    # SAME skip line on every poll. Key the dedupe on PREV's play instance
+    # (its firstSeenAtUnix), not the wall-clock minute: churn that spans a
+    # minute boundary still collapses to one line, while a genuine second
+    # skip of the same track — a NEW play with a fresh firstSeenAtUnix —
+    # is still logged. This mark rides in the cache below.
+    #
+    # If a legacy cache has no firstSeenAtUnix, PREV_FIRST_SEEN is 0. Don't
+    # let distinct plays collapse onto "<trackKey>@0" and swallow a real
+    # skip: fall back to a per-poll-unique key (NOW), which never matches a
+    # prior mark — favouring an occasional duplicate over a lost skip.
+    if [[ "$PREV_FIRST_SEEN" == "0" || -z "$PREV_FIRST_SEEN" ]]; then
+      SKIP_MARK_NOW="${PREV_TRACK_KEY}@now-${NOW}"
+    else
+      SKIP_MARK_NOW="${PREV_TRACK_KEY}@${PREV_FIRST_SEEN}"
+    fi
+    if [[ "$PREV_WAS_SKIP" == "true" && "$PREV_LOGGED" == "false" \
+          && "$SKIP_MARK_NOW" != "$LAST_SKIP_LOGGED" ]]; then
       printf '%s\n' "- ${ISO_NOW} — ${PREV_TITLE} · ${PREV_ARTIST} · skipped ${PREV_PLAYED}s" >> "$HISTORY"
+      LAST_SKIP_LOGGED="$SKIP_MARK_NOW"
+      # Persist the mark immediately onto the CURRENT (still-PREV) cache.
+      # The full cache rewrite for the new song happens much later (after
+      # cover/enrich/state fetches); a SIGKILL in that gap would otherwise
+      # leave the skip line on disk with no mark, and a restart while PREV
+      # is current again would append it a second time.
+      if [[ -s "$CACHE" ]] && jq -e . "$CACHE" >/dev/null 2>&1; then
+        jq --arg m "$LAST_SKIP_LOGGED" '.lastSkipLogged = $m' "$CACHE" | write_cache
+      fi
     fi
   else
     NEW_RECENT="$PREV_RECENT"
@@ -276,6 +323,7 @@ except Exception:
     --argjson spotify "$SPOTIFY_JSON" \
     --arg startedAt "$ISO_NOW" \
     --arg bundleId "$BUNDLE_ID" \
+    --arg lastSkipLogged "$LAST_SKIP_LOGGED" \
     '{title:$title, artist:$artist, album:$album, trackKey:$trackKey,
       duration:$duration, initialElapsed:$initialElapsed,
       playbackElapsed:$playbackElapsed, playbackPosition:$playbackPosition,
@@ -283,6 +331,7 @@ except Exception:
       playbackRate:$playbackRate, recent:$recent,
       coverAvailable:$coverAvailable, coverShownToHook:false,
       startedAt:$startedAt, loggedToHistory:false,
+      lastSkipLogged:$lastSkipLogged,
       source:{bundleId:$bundleId}}
       + $enrich + $spotify' | write_cache
 

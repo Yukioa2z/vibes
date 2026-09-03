@@ -40,7 +40,9 @@ API="https://api.spotify.com/v1"
 history_event() {
   local msg="$1"
   [[ -f "$HISTORY" ]] || return 0
-  printf '> %s — %s\n' "$(date -u +%Y-%m-%dT%H:%M)" "$msg" >> "$HISTORY"
+  # Local time with explicit offset, matching music-poll.sh history lines.
+  local iso; iso="$(date +%Y-%m-%dT%H:%M%z | sed -E 's/([+-][0-9]{2})([0-9]{2})$/\1:\2/')"
+  printf '> %s — %s\n' "$iso" "$msg" >> "$HISTORY"
 }
 
 ok()   { printf '%s\n' "$*"; }
